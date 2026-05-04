@@ -4,12 +4,12 @@ local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED = 100
 local SEARCH_TIMEOUT = 60
 local TELEPORT_COOLDOWN = 15
-local SCRIPT_URL = "https://raw.githubusercontent.com/MaxZarev/rblx/refs/heads/main/use_tools.lua"
+local SCRIPT_URL = "https://raw.githubusercontent.com/jekklofol/roblox-bot/refs/heads/main/use_tools.lua"
 local WATCHDOG_TIMEOUT = 360
 local API_URL = "https://c8g8g0wc8gswogk8cs0ocgsw.146.103.101.22.sslip.io"
 
-local Tools = loadstring(game:HttpGet("https://raw.githubusercontent.com/MaxZarev/rblx/main/tools.lua?t=" .. tick()))()
-local Auth = loadstring(game:HttpGet("https://raw.githubusercontent.com/MaxZarev/rblx/main/auth.lua?t=" .. tick()))()
+local Tools = loadstring(game:HttpGet("https://raw.githubusercontent.com/jekklofol/roblox-bot/main/tools.lua?t=" .. tick()))()
+local Auth = loadstring(game:HttpGet("https://raw.githubusercontent.com/jekklofol/roblox-bot/main/auth.lua?t=" .. tick()))()
 
 if _G.BotRunning then
     warn("Скрипт уже запущен!")
