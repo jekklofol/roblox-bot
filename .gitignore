@@ -1,0 +1,6 @@
+admin/
+tmp/
+*.log
+password.txt
+bot_config.json
+cursor_*.json
