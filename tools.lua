@@ -814,17 +814,63 @@ function Tools.checkCollisionAndRerollIfNeeded(placeId, scriptUrl)
     return true
 end
 
+-- лимит reroll'ов: если бот пинг-понгит между серверами — остаётся где есть
+local function _rerollCounterFile(placeId)
+    return "reroll_count_" .. tostring(placeId) .. ".json"
+end
+
+function Tools._countRecentRerolls(placeId)
+    local check = isfile or isfile_custom or (syn and syn.is_file)
+    local read  = readfile or read_file or (syn and syn.read_file)
+    if not check or not read then return 0, {} end
+    local fn = _rerollCounterFile(placeId)
+    local ok, exists = pcall(check, fn)
+    if not (ok and exists) then return 0, {} end
+    local rok, raw = pcall(read, fn)
+    if not (rok and raw and raw ~= "") then return 0, {} end
+    local dok, data = pcall(function() return HttpService:JSONDecode(raw) end)
+    if not (dok and type(data) == "table") then return 0, {} end
+    local cutoff = os.time() - 60
+    local recent = {}
+    for _, ts in ipairs(data) do
+        if type(ts) == "number" and ts > cutoff then table.insert(recent, ts) end
+    end
+    return #recent, recent
+end
+
+function Tools._recordReroll(placeId)
+    local write = writefile or write_file or (syn and syn.write_file)
+    if not write then return end
+    local _, recent = Tools._countRecentRerolls(placeId)
+    table.insert(recent, os.time())
+    pcall(write, _rerollCounterFile(placeId), HttpService:JSONEncode(recent))
+end
+
 -- расширенная проверка после initBot: смотрим в Supabase, не сидит ли другой бот.
 -- если да — закрываем сессию, делаем reroll.
 function Tools.checkServerSharedWithOtherBot(scriptUrl)
     local jobId = game.JobId
     if not jobId or jobId == "" then return false end
+
+    -- защита от пинг-понга: не больше 5 reroll'ов за 60 секунд
+    local recentCount = Tools._countRecentRerolls(Tools.placeId)
+    if recentCount >= 5 then
+        Tools.logWarning("Достигнут лимит reroll'ов, остаюсь на сервере", {
+            category    = "HOP",
+            server_id   = jobId,
+            reroll_count = recentCount,
+        })
+        return false
+    end
+
     if not Tools.isServerOccupiedByOtherBot(jobId) then return false end
 
-    Tools.logWarning("Коллизия: на этом сервере уже сидит другой бот, reroll", {
-        category  = "HOP",
-        server_id = jobId,
+    Tools.logWarning("Коллизия: на этом сервере сидит более старший бот, reroll", {
+        category    = "HOP",
+        server_id   = jobId,
+        recent_count = recentCount,
     })
+    Tools._recordReroll(Tools.placeId)
     Tools.endSession()
     pcall(Tools._flushLogs)
     if queueFunc and scriptUrl and scriptUrl ~= "" then
