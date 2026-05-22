@@ -456,12 +456,48 @@ function Tools.getCasualMessage()
     return pool[math.random(1, #pool)].text
 end
 
+local function _classifyBrand(text)
+    local t = string.lower(text or "")
+    if t:find("adoptme%.pw") or t:find("adopt%-me%.pw") or t:find("adopt%s*me%s*%.%s*pw") then
+        return "adoptme"
+    end
+    return "rblx"
+end
+
 function Tools.getAdMessage()
     Tools.preloadMessages()
     local pool = Tools._adsCache or {}
     if #pool == 0 then return nil end
-    local row = pool[math.random(1, #pool)]
-    return { id = row.id, message = row.text, cooldown_minutes = row.cooldown_minutes }
+
+    -- балансировка 50/50 по бренду: rblx.pw / adoptme.pw
+    local rblx, adoptme = {}, {}
+    for _, m in ipairs(pool) do
+        if _classifyBrand(m.text) == "adoptme" then
+            table.insert(adoptme, m)
+        else
+            table.insert(rblx, m)
+        end
+    end
+
+    local chosenBrand, chosenPool
+    if math.random() < 0.5 then
+        chosenBrand = (#adoptme > 0) and "adoptme" or "rblx"
+        chosenPool  = (#adoptme > 0) and adoptme   or rblx
+    else
+        chosenBrand = (#rblx > 0) and "rblx" or "adoptme"
+        chosenPool  = (#rblx > 0) and rblx   or adoptme
+    end
+    if #chosenPool == 0 then return nil end
+
+    local row = chosenPool[math.random(1, #chosenPool)]
+    Tools.logDebug("Ad выбран по бренду", {
+        category    = "AD",
+        brand       = chosenBrand,
+        pool_rblx   = #rblx,
+        pool_adopt  = #adoptme,
+        message_id  = row.id,
+    })
+    return { id = row.id, message = row.text, cooldown_minutes = row.cooldown_minutes, brand = chosenBrand }
 end
 
 function Tools.markAdMessageUsed(messageId, cooldownMinutes)
