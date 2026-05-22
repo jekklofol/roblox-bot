@@ -41,6 +41,12 @@ end
 -- ============================================================
 Tools.initBot(V)
 Tools.startSession()
+
+-- расширенная проверка: после initBot спрашиваем у Supabase, не сидит ли другой бот тут
+if Tools.checkServerSharedWithOtherBot(SCRIPT_URL) then
+    return
+end
+
 Tools.startHeartbeat(45)
 Tools.startCommandLoop(5)
 Tools.startPoolRefresher(PLACE_ID, 90)

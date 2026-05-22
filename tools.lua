@@ -786,13 +786,24 @@ function Tools.fastServerHop()
     return true
 end
 
+-- проверить через Supabase сидит ли другой бот на этом jobId
+function Tools.isServerOccupiedByOtherBot(jobId)
+    if not jobId or jobId == "" or not Tools.bot_id then return false end
+    local res = Tools.sbRpc("rpc_is_server_occupied", {
+        p_server_id = jobId,
+        p_bot_id    = Tools.bot_id,
+    })
+    return res == true
+end
+
 -- утилита для use_tools: проверка коллизии перед инициализацией
+-- НЕ требует bot_id (вызывается до initBot), использует только локальный файл
 function Tools.checkCollisionAndRerollIfNeeded(placeId, scriptUrl)
     local jobId = game.JobId
     if not jobId or jobId == "" then return false end
     if not Tools.isJobIdVisitedLocal(placeId, jobId) then return false end
 
-    warn("[Tools] Коллизия: попали на уже посещённый сервер " .. jobId)
+    warn("[Tools] Коллизия (локально): попали на уже посещённый сервер " .. jobId)
     if queueFunc and scriptUrl and scriptUrl ~= "" then
         pcall(function()
             queueFunc('loadstring(game:HttpGet("'
@@ -800,6 +811,29 @@ function Tools.checkCollisionAndRerollIfNeeded(placeId, scriptUrl)
         end)
     end
     pcall(function() TeleportService:Teleport(placeId, player) end)
+    return true
+end
+
+-- расширенная проверка после initBot: смотрим в Supabase, не сидит ли другой бот.
+-- если да — закрываем сессию, делаем reroll.
+function Tools.checkServerSharedWithOtherBot(scriptUrl)
+    local jobId = game.JobId
+    if not jobId or jobId == "" then return false end
+    if not Tools.isServerOccupiedByOtherBot(jobId) then return false end
+
+    Tools.logWarning("Коллизия: на этом сервере уже сидит другой бот, reroll", {
+        category  = "HOP",
+        server_id = jobId,
+    })
+    Tools.endSession()
+    pcall(Tools._flushLogs)
+    if queueFunc and scriptUrl and scriptUrl ~= "" then
+        pcall(function()
+            queueFunc('loadstring(game:HttpGet("'
+                .. scriptUrl .. '?t=' .. tick() .. '"))()')
+        end)
+    end
+    pcall(function() TeleportService:Teleport(Tools.placeId, player) end)
     return true
 end
 
