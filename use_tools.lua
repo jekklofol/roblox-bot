@@ -1,9 +1,11 @@
-local V                     = "v3.1.0-fast-hop"
+local V                     = "v3.2.0-hard-cap"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
 local SEARCH_TIMEOUT        = 60
 local TELEPORT_COOLDOWN     = 15
+local MAX_SERVER_TIME_SEC   = 120   -- жёсткий cap: больше 2 минут на одном сервере не сидим
+local MIN_PLAYERS_FOR_AD    = 3     -- если меньше — реклама бесполезна, сразу hop
 local SCRIPT_URL            = "https://raw.githubusercontent.com/jekklofol/roblox-bot/refs/heads/main/use_tools.lua"
 
 local Tools = loadstring(game:HttpGet(
@@ -64,6 +66,8 @@ Tools.autoReconnect()
 -- ============================================================
 -- Main flow
 -- ============================================================
+local serverStartTick = tick()
+
 local function runBot()
     if not Tools.getBotState().running then
         Tools.logWarning("runBot: botState.running=false, выхожу", { category = "BOT" })
@@ -76,6 +80,17 @@ local function runBot()
     Tools.preloadMessages(true)
 
     Tools.randomDelay(2, 5)
+
+    -- проверка игроков ДО кликов: если сервер почти пустой — сразу hop, не тратим время
+    local playerCount = #Players:GetPlayers()
+    if playerCount < MIN_PLAYERS_FOR_AD then
+        Tools.logInfo("Слишком мало игроков на сервере, hop", {
+            category = "BOT", players = playerCount, min = MIN_PLAYERS_FOR_AD,
+        })
+        Tools.endSession()
+        Tools.fastServerHop()
+        return
+    end
 
     if Tools.waitForPlayButton(20) then
         Tools.randomDelay(1, 3)
@@ -112,22 +127,44 @@ local function runBot()
     end
 
     Tools.randomDelay(2, 5)
+    Tools.logInfo("Цикл завершён, hop", {
+        category        = "BOT",
+        time_on_server  = math.floor(tick() - serverStartTick),
+    })
     Tools.endSession()
     Tools.fastServerHop()
 end
 
 -- ============================================================
--- Watchdog: на случай если runBot завис
+-- Hard cap: безусловный hop после MAX_SERVER_TIME_SEC секунд
+-- никакая ошибка/зависание не оставит бота на сервере дольше
 -- ============================================================
 task.spawn(function()
-    task.wait(300)
-    if Tools.isEnabled() then
-        Tools.logCritical("Watchdog: 5 мин без hop, форс-телепорт", { category = "WATCHDOG" })
-        pcall(Tools._flushLogs)
-        pcall(Tools.fastServerHop)
-        task.wait(15)
-        pcall(function() game:GetService("TeleportService"):Teleport(PLACE_ID, player) end)
-    end
+    task.wait(MAX_SERVER_TIME_SEC)
+    Tools.logWarning("Hard cap: " .. MAX_SERVER_TIME_SEC .. "с истекли, форс-hop", {
+        category       = "WATCHDOG",
+        time_on_server = math.floor(tick() - serverStartTick),
+    })
+    pcall(Tools.endSession)
+    pcall(Tools._flushLogs)
+    -- ставим скрипт на следующий сервер если ещё не поставлен
+    pcall(function()
+        if queueonteleport then
+            queueonteleport('loadstring(game:HttpGet("'
+                .. SCRIPT_URL .. '?t=' .. tick() .. '"))()')
+        end
+    end)
+    pcall(function() game:GetService("TeleportService"):Teleport(PLACE_ID, player) end)
+end)
+
+-- ============================================================
+-- Fallback watchdog: если даже hard cap не сработал — через 60с ещё попытка
+-- ============================================================
+task.spawn(function()
+    task.wait(MAX_SERVER_TIME_SEC + 60)
+    Tools.logCritical("Fallback watchdog: ещё одна попытка телепорта", { category = "WATCHDOG" })
+    pcall(Tools._flushLogs)
+    pcall(function() game:GetService("TeleportService"):Teleport(PLACE_ID, player) end)
 end)
 
 -- ============================================================
