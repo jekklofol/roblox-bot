@@ -1,12 +1,12 @@
-local V                     = "v2.0.0-supabase"
+local V                     = "v3.0.0-supabase"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
 local SEARCH_TIMEOUT        = 60
 local TELEPORT_COOLDOWN     = 15
 local SCRIPT_URL            = "https://raw.githubusercontent.com/jekklofol/roblox-bot/refs/heads/main/use_tools.lua"
-local WATCHDOG_TIMEOUT      = 360
 
+-- cache-bust для tools.lua, иначе GitHub raw отдаёт устаревшую версию
 local Tools = loadstring(game:HttpGet(
     "https://raw.githubusercontent.com/jekklofol/roblox-bot/main/tools.lua?t=" .. tick()
 ))()
@@ -29,58 +29,69 @@ Tools.setup({
     scriptUrl           = SCRIPT_URL,
 })
 
+-- ============================================================
+-- Bootstrap
+-- ============================================================
 Tools.initBot(V)
-Tools.startHeartbeat(60)
+Tools.startSession()
+Tools.startHeartbeat(45)
+Tools.startCommandLoop(5)
 
+-- стартовый snapshot, чтобы видеть состояние при заходе на сервер
+pcall(Tools.logSystemSnapshot, "boot")
+
+-- удалённый конфиг → переменные бота
 local minOverride = tonumber(Tools.getRemoteConfigValue("min_players_preferred"))
 if minOverride then Tools.minPlayersPreferred = minOverride end
 
+local speedOverride = tonumber(Tools.getRemoteConfigValue("chat_speed_multiplier"))
+if speedOverride and speedOverride > 0 then Tools.chatSpeedMul = speedOverride end
+
 Tools.autoReconnect()
 
+-- ============================================================
+-- Main loop body (защищён глобальным xpcall)
+-- ============================================================
 local function runBot()
-    if not Tools.getBotState().running then return end
+    if not Tools.getBotState().running then
+        Tools.logWarning("runBot: botState.running=false, выхожу",
+            { category = "BOT" })
+        return
+    end
     Tools.enabled = true
-
-    task.spawn(function()
-        task.wait(WATCHDOG_TIMEOUT)
-        pcall(function()
-            Tools.logWarning("Watchdog таймаут",
-                { category = "WATCHDOG", timeout = WATCHDOG_TIMEOUT })
-        end)
-        for i = 1, 3 do
-            pcall(function() Tools.serverHop() end)
-            task.wait(30)
-        end
-        pcall(function()
-            game:GetService("TeleportService"):Teleport(PLACE_ID, player)
-        end)
-    end)
-
     Tools.logInfo("Скрипт запущен", { category = "BOT", version = V })
+
     Tools.connectChatListener()
-    Tools.randomDelay(3, 7)
+    Tools.preloadMessages(true)
+
+    Tools.randomDelay(2, 5)
 
     if Tools.waitForPlayButton(20) then
-        Tools.randomDelay(3, 6)
+        Tools.randomDelay(1, 3)
         Tools.clickPlayButton()
     else
-        Tools.logWarning("PlayButton не найден", { category = "BOT" })
+        Tools.logWarning("PlayButton не появился — пропускаю шаг",
+            { category = "BOT" })
     end
 
     if Tools.waitForAdoptionIslandButton(20) then
-        Tools.randomDelay(3, 6)
+        Tools.randomDelay(1, 3)
         local ok = Tools.clickAdoptionIslandButton()
         if not ok then
-            Tools.logWarning("Клик по кнопке Adoption Island не выполнен", { category = "BOT" })
+            Tools.logWarning("Не удалось кликнуть Adoption Island",
+                { category = "BOT" })
         end
     end
 
-    Tools.randomDelay(5, 10)
+    Tools.randomDelay(4, 8)
 
+    -- casual
     local casual = Tools.getCasualMessage()
     Tools.sendChat(casual)
-    Tools.randomDelay(8, 15)
 
+    Tools.randomDelay(5, 10)
+
+    -- реклама
     local ad = Tools.getAdMessage()
     if ad then
         Tools.sendChat(ad.message)
@@ -89,12 +100,51 @@ local function runBot()
             Tools.markAdMessageUsed(ad.id, ad.cooldown_minutes or 60)
         end
     else
+        Tools.logWarning("Нет доступной рекламы — fallback",
+            { category = "AD" })
         Tools.sendChat("RBLX . PW - sell you pets for real money")
-        Tools.logWarning("Использован fallback для рекламного сообщения", { category = "AD" })
     end
 
-    Tools.randomDelay(3, 5)
+    Tools.randomDelay(2, 5)
+    Tools.endSession()
     Tools.serverHop()
 end
 
-task.spawn(runBot)
+-- ============================================================
+-- Watchdog: если runBot завис — телепорт обратно на главный
+-- (запускается параллельно; убивается телепортом)
+-- ============================================================
+task.spawn(function()
+    task.wait(300) -- 5 минут
+    if Tools.isEnabled() then
+        Tools.logCritical("Watchdog: 5 мин без serverHop, форс-телепорт", {
+            category = "WATCHDOG",
+        })
+        pcall(Tools._flushLogs)
+        for _ = 1, 3 do
+            pcall(Tools.serverHop)
+            task.wait(15)
+        end
+        pcall(function()
+            game:GetService("TeleportService"):Teleport(PLACE_ID, player)
+        end)
+    end
+end)
+
+-- ============================================================
+-- Глобальный xpcall — любая ошибка логируется и шлёт rejoin
+-- ============================================================
+task.spawn(function()
+    local ok, err = xpcall(runBot, function(e)
+        return tostring(e) .. "\n" .. debug.traceback("", 2)
+    end)
+    if not ok then
+        Tools.logCritical("runBot упал с исключением", {
+            category = "EXCEPTION",
+            error    = tostring(err),
+        })
+        pcall(Tools._flushLogs)
+        task.wait(3)
+        pcall(Tools.serverHop)
+    end
+end)
