@@ -556,6 +556,218 @@ function Tools.clearCursor(placeId)
 end
 
 -- ============================================================
+-- LOCAL VISITED JOBIDS (быстрый чек коллизии до ответа Supabase)
+-- ============================================================
+local function _visitedFile(placeId)
+    return "visited_" .. tostring(placeId) .. ".json"
+end
+
+function Tools.loadLocalVisited(placeId)
+    local check = isfile or isfile_custom or (syn and syn.is_file)
+    local read  = readfile or read_file or (syn and syn.read_file)
+    if not check or not read then return {} end
+    local fn = _visitedFile(placeId)
+    local ok, exists = pcall(check, fn)
+    if not (ok and exists) then return {} end
+    local rok, raw = pcall(read, fn)
+    if not (rok and raw and raw ~= "") then return {} end
+    local dok, data = pcall(function() return HttpService:JSONDecode(raw) end)
+    if not (dok and type(data) == "table") then return {} end
+    -- очистка старше 12 часов
+    local cutoff = os.time() - 12 * 3600
+    local cleaned = {}
+    for jid, ts in pairs(data) do
+        if type(ts) == "number" and ts > cutoff then cleaned[jid] = ts end
+    end
+    return cleaned
+end
+
+function Tools.saveLocalVisited(placeId, tbl)
+    local write = writefile or write_file or (syn and syn.write_file)
+    if not write then return false end
+    return pcall(write, _visitedFile(placeId), HttpService:JSONEncode(tbl))
+end
+
+function Tools.markJobIdVisitedLocal(placeId, jobId)
+    if not jobId or jobId == "" then return end
+    local cur = Tools.loadLocalVisited(placeId)
+    cur[jobId] = os.time()
+    Tools.saveLocalVisited(placeId, cur)
+end
+
+function Tools.isJobIdVisitedLocal(placeId, jobId)
+    if not jobId or jobId == "" then return false end
+    local cur = Tools.loadLocalVisited(placeId)
+    return cur[jobId] ~= nil
+end
+
+-- ============================================================
+-- SERVER POOL (общий кэш через Supabase)
+-- ============================================================
+function Tools.pickServerFromPool(placeId, minPlayers, maxPlayers)
+    if not Tools.bot_id then return nil end
+    local data = Tools.sbRpc("rpc_pick_server", {
+        p_place_id    = placeId,
+        p_bot_id      = Tools.bot_id,
+        p_min_players = minPlayers or Tools.minPlayersPreferred,
+        p_max_players = maxPlayers or Tools.maxPlayersAllowed,
+        p_visited_hrs = 12,
+    })
+    if data and type(data) == "table" and data[1] and data[1].server_id then
+        return data[1]
+    end
+    return nil
+end
+
+function Tools.refreshServerPool(placeId, force)
+    -- проверяем возраст пула — если свежий, не тратим API-квоту
+    if not force then
+        local age = Tools.sbRpc("rpc_pool_age_seconds", { p_place_id = placeId })
+        if type(age) == "number" and age < 60 then
+            Tools.logDebug("Пул свежий, refresh пропущен",
+                { category = "POOL", age_seconds = age })
+            return false
+        end
+    end
+
+    local t0 = tick()
+    local url = string.format(
+        "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&limit=100&excludeFullGames=true",
+        placeId
+    )
+    local ok, resp = pcall(function() return httprequest({ Url = url }) end)
+    if not ok or not resp or resp.StatusCode ~= 200 then
+        Tools.logWarning("Refresh пула: HTTP ошибка", {
+            category    = "POOL",
+            status      = resp and resp.StatusCode or "no_response",
+            duration_ms = durationMs(t0),
+        })
+        return false
+    end
+
+    local data = HttpService:JSONDecode(resp.Body)
+    if not (data and data.data and #data.data > 0) then return false end
+
+    -- передаём массив целиком в RPC
+    local count = Tools.sbRpc("rpc_upsert_pool", {
+        p_place_id = placeId,
+        p_servers  = data.data,
+    })
+    Tools.logInfo("Пул серверов обновлён", {
+        category    = "POOL",
+        fetched     = #data.data,
+        upserted    = count,
+        duration_ms = durationMs(t0),
+    })
+    return true
+end
+
+function Tools.startPoolRefresher(placeId, intervalSec)
+    intervalSec = intervalSec or 90
+    task.spawn(function()
+        -- стартовый джиттер 0-30с, чтобы боты не били API одновременно
+        task.wait(math.random() * 30)
+        while Tools.enabled do
+            pcall(Tools.refreshServerPool, placeId, false)
+            -- jitter в основном цикле: ±30%
+            task.wait(intervalSec * (0.85 + math.random() * 0.30))
+        end
+    end)
+end
+
+-- ============================================================
+-- FAST SERVER HOP (новая основная реализация)
+-- ============================================================
+function Tools.fastServerHop()
+    if not Tools.isEnabled() then return false end
+    local hopStart = tick()
+    Tools.logInfo("Старт fast hop", {
+        category    = "HOP",
+        place_id    = Tools.placeId,
+        current_job = game.JobId,
+    })
+
+    -- 1. Очередь скрипта при следующем телепорте
+    if queueFunc and not scriptQueued and Tools.scriptUrl ~= "" then
+        pcall(function()
+            queueFunc('loadstring(game:HttpGet("'
+                .. Tools.scriptUrl .. '?t=' .. tick() .. '"))()')
+        end)
+        scriptQueued = true
+    end
+
+    -- 2. Попытка взять из пула — нулевая нагрузка на Roblox API
+    local picked = Tools.pickServerFromPool(Tools.placeId,
+        Tools.minPlayersPreferred, Tools.maxPlayersAllowed)
+    if picked and picked.server_id then
+        Tools.logInfo("Сервер выбран из пула", {
+            category    = "HOP",
+            server_id   = picked.server_id,
+            players     = picked.player_count,
+            duration_ms = durationMs(hopStart),
+        })
+        Tools.markServerVisited(picked.server_id, Tools.placeId, picked.player_count)
+        Tools.markJobIdVisitedLocal(Tools.placeId, picked.server_id)
+        Tools.bumpSession("hops")
+        pcall(Tools._flushLogs)
+        local tpOk = pcall(function()
+            TeleportService:TeleportToPlaceInstance(Tools.placeId, picked.server_id, player)
+        end)
+        if tpOk then return true end
+        Tools.logWarning("TeleportToPlaceInstance провалился, fallback на reroll",
+            { category = "HOP", server_id = picked.server_id })
+    else
+        Tools.logDebug("Пул пуст или нет подходящих — reroll-режим",
+            { category = "HOP" })
+    end
+
+    -- 3. Reroll: Roblox сам выбирает случайный публичный сервер
+    --    Если попадём на тот же job — стартовая проверка в use_tools мгновенно сделает повтор.
+    Tools.markJobIdVisitedLocal(Tools.placeId, game.JobId)
+    Tools.bumpSession("hops")
+
+    -- параллельно — если пул был пуст, инициируем refresh для следующих ботов
+    if not picked then
+        task.spawn(function() pcall(Tools.refreshServerPool, Tools.placeId, true) end)
+    end
+
+    Tools.logInfo("Reroll teleport (без jobId)", {
+        category    = "HOP",
+        duration_ms = durationMs(hopStart),
+    })
+    pcall(Tools._flushLogs)
+    local rerollOk, rerollErr = pcall(function()
+        TeleportService:Teleport(Tools.placeId, player)
+    end)
+    if not rerollOk then
+        Tools.logError("Reroll teleport провалился", {
+            category = "HOP",
+            error    = tostring(rerollErr),
+        })
+        -- крайний fallback — старый API-based hop
+        return Tools.serverHop()
+    end
+    return true
+end
+
+-- утилита для use_tools: проверка коллизии перед инициализацией
+function Tools.checkCollisionAndRerollIfNeeded(placeId, scriptUrl)
+    local jobId = game.JobId
+    if not jobId or jobId == "" then return false end
+    if not Tools.isJobIdVisitedLocal(placeId, jobId) then return false end
+
+    warn("[Tools] Коллизия: попали на уже посещённый сервер " .. jobId)
+    if queueFunc and scriptUrl and scriptUrl ~= "" then
+        pcall(function()
+            queueFunc('loadstring(game:HttpGet("'
+                .. scriptUrl .. '?t=' .. tick() .. '"))()')
+        end)
+    end
+    pcall(function() TeleportService:Teleport(placeId, player) end)
+    return true
+end
+
+-- ============================================================
 -- BOT COMMANDS (управление из админки)
 -- ============================================================
 function Tools._markCommandResult(cmdId, status, result)
