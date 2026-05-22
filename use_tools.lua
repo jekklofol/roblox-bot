@@ -1,4 +1,4 @@
-local V                     = "v3.2.0-hard-cap"
+local V                     = "v3.3.0-per-user"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -31,15 +31,7 @@ Tools.setup({
 })
 
 -- ============================================================
--- COLLISION CHECK: если попали на уже посещённый jobId — мгновенный reroll
--- Делается ДО любой инициализации/HTTP, чтобы не тратить секунды.
--- ============================================================
-if Tools.checkCollisionAndRerollIfNeeded(PLACE_ID, SCRIPT_URL) then
-    return
-end
-
--- ============================================================
--- Bootstrap
+-- Bootstrap (initBot первым делом — чтобы version и bot_id обновились ДО reroll'ов)
 -- ============================================================
 Tools.initBot(V)
 Tools.startSession()

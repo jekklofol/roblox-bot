@@ -560,7 +560,7 @@ function Tools.getSavedCursor(placeId)
     local check = isfile or isfile_custom or (syn and syn.is_file)
     local read  = readfile or read_file or (syn and syn.read_file)
     if not check or not read then return nil end
-    local filename = "cursor_" .. tostring(placeId) .. ".json"
+    local filename = "cursor_" .. tostring(placeId) .. _userSuffix() .. ".json"
     local ok, exists = pcall(check, filename)
     if not (ok and exists) then return nil end
     local rok, raw = pcall(read, filename)
@@ -575,7 +575,7 @@ end
 function Tools.saveCursor(placeId, cursor, pageNumber)
     local write = writefile or write_file or (syn and syn.write_file)
     if not write then return false end
-    local filename = "cursor_" .. tostring(placeId) .. ".json"
+    local filename = "cursor_" .. tostring(placeId) .. _userSuffix() .. ".json"
     return pcall(function()
         write(filename, HttpService:JSONEncode({
             cursor     = cursor,
@@ -588,14 +588,19 @@ end
 function Tools.clearCursor(placeId)
     local del = delfile or delete_file or (syn and syn.delete_file)
     if not del then return false end
-    return pcall(del, "cursor_" .. tostring(placeId) .. ".json")
+    return pcall(del, "cursor_" .. tostring(placeId) .. _userSuffix() .. ".json")
 end
 
 -- ============================================================
--- LOCAL VISITED JOBIDS (быстрый чек коллизии до ответа Supabase)
+-- LOCAL VISITED JOBIDS (per-user, быстрый чек коллизии до ответа Supabase)
 -- ============================================================
+local function _userSuffix()
+    local uid = player and player.UserId
+    return uid and ("_" .. tostring(uid)) or ""
+end
+
 local function _visitedFile(placeId)
-    return "visited_" .. tostring(placeId) .. ".json"
+    return "visited_" .. tostring(placeId) .. _userSuffix() .. ".json"
 end
 
 function Tools.loadLocalVisited(placeId)
@@ -814,9 +819,9 @@ function Tools.checkCollisionAndRerollIfNeeded(placeId, scriptUrl)
     return true
 end
 
--- лимит reroll'ов: если бот пинг-понгит между серверами — остаётся где есть
+-- лимит reroll'ов: если бот пинг-понгит между серверами — остаётся где есть (per-user)
 local function _rerollCounterFile(placeId)
-    return "reroll_count_" .. tostring(placeId) .. ".json"
+    return "reroll_count_" .. tostring(placeId) .. _userSuffix() .. ".json"
 end
 
 function Tools._countRecentRerolls(placeId)
