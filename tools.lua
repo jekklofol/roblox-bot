@@ -31,6 +31,7 @@ local Tools = {
     maxPlayersAllowed   = 100,
     searchTimeout       = 60,
     teleportCooldown    = 15,
+    minServerDwell      = 20,   -- минимум секунд на сервере до любого hop (анти-флуд телепортов)
     placeId             = 920587237,
     scriptUrl           = "",
     enabled             = true,
@@ -750,8 +751,7 @@ function Tools.fastServerHop()
         Tools.markServerVisited(picked.server_id, Tools.placeId, picked.player_count)
         Tools.markJobIdVisitedLocal(Tools.placeId, picked.server_id)
         Tools.bumpSession("hops")
-        pcall(Tools._flushLogs)
-        local tpOk = pcall(function()
+        local tpOk = Tools.safeTeleport("fast-pool", function()
             TeleportService:TeleportToPlaceInstance(Tools.placeId, picked.server_id, player)
         end)
         if tpOk then return true end
@@ -776,15 +776,11 @@ function Tools.fastServerHop()
         category    = "HOP",
         duration_ms = durationMs(hopStart),
     })
-    pcall(Tools._flushLogs)
-    local rerollOk, rerollErr = pcall(function()
+    local rerollOk = Tools.safeTeleport("reroll", function()
         TeleportService:Teleport(Tools.placeId, player)
     end)
     if not rerollOk then
-        Tools.logError("Reroll teleport провалился", {
-            category = "HOP",
-            error    = tostring(rerollErr),
-        })
+        Tools.logError("Reroll teleport провалился", { category = "HOP" })
         -- крайний fallback — старый API-based hop
         return Tools.serverHop()
     end
@@ -815,7 +811,9 @@ function Tools.checkCollisionAndRerollIfNeeded(placeId, scriptUrl)
                 .. scriptUrl .. '?t=' .. tick() .. '"))()')
         end)
     end
-    pcall(function() TeleportService:Teleport(placeId, player) end)
+    Tools.safeTeleport("collision-local", function()
+        TeleportService:Teleport(placeId, player)
+    end, true)
     return true
 end
 
@@ -884,7 +882,9 @@ function Tools.checkServerSharedWithOtherBot(scriptUrl)
                 .. scriptUrl .. '?t=' .. tick() .. '"))()')
         end)
     end
-    pcall(function() TeleportService:Teleport(Tools.placeId, player) end)
+    Tools.safeTeleport("collision-reroll", function()
+        TeleportService:Teleport(Tools.placeId, player)
+    end, true)
     return true
 end
 
@@ -927,24 +927,28 @@ function Tools._handleCommand(cmd)
     elseif kind == "rejoin" then
         Tools._markCommandResult(cmd.id, "done", { rejoin = true })
         task.spawn(function()
-            pcall(function()
-                if queueFunc and Tools.scriptUrl ~= "" and not scriptQueued then
+            if queueFunc and Tools.scriptUrl ~= "" and not scriptQueued then
+                pcall(function()
                     queueFunc('loadstring(game:HttpGet("' .. Tools.scriptUrl .. '?t=' .. tick() .. '"))()')
                     scriptQueued = true
-                end
+                end)
+            end
+            Tools.safeTeleport("cmd-rejoin", function()
                 TeleportService:Teleport(Tools.placeId, player)
-            end)
+            end, true)
         end)
 
     elseif kind == "reload" then
         Tools._markCommandResult(cmd.id, "done", { reloaded = true })
         task.spawn(function()
-            pcall(function()
-                if queueFunc and Tools.scriptUrl ~= "" then
+            if queueFunc and Tools.scriptUrl ~= "" then
+                pcall(function()
                     queueFunc('loadstring(game:HttpGet("' .. Tools.scriptUrl .. '?t=' .. tick() .. '"))()')
-                end
+                end)
+            end
+            Tools.safeTeleport("cmd-reload", function()
                 TeleportService:Teleport(Tools.placeId, player)
-            end)
+            end, true)
         end)
 
     elseif kind == "exec" then
@@ -1011,9 +1015,59 @@ function Tools.setup(opts)
     if opts.maxPlayersAllowed   then Tools.maxPlayersAllowed   = opts.maxPlayersAllowed   end
     if opts.searchTimeout       then Tools.searchTimeout       = opts.searchTimeout       end
     if opts.teleportCooldown    then Tools.teleportCooldown    = opts.teleportCooldown    end
+    if opts.minServerDwell      then Tools.minServerDwell      = opts.minServerDwell      end
     if opts.placeId             then Tools.placeId             = opts.placeId             end
     if opts.scriptUrl           then Tools.scriptUrl           = opts.scriptUrl           end
+    Tools._startTick = tick()   -- момент захода на сервер, отсчёт dwell
+
+    -- если телепорт провалился асинхронно — снимаем guard, иначе бот зависнет в IsHopping
+    if not Tools._tpFailHooked then
+        Tools._tpFailHooked = true
+        pcall(function()
+            TeleportService.TeleportInitFailed:Connect(function(plr, result, msg)
+                if plr == player then
+                    _G.IsHopping = false
+                    Tools.logWarning("TeleportInitFailed — сбрасываю IsHopping", {
+                        category = "HOP", result = tostring(result), msg = tostring(msg),
+                    })
+                end
+            end)
+        end)
+    end
     return Tools
+end
+
+-- ============================================================
+-- SAFE TELEPORT: единый шлюз для всех телепортов.
+-- Исключает конкурентные вызовы (несколько watchdog'ов + runBot
+-- + xpcall дёргали Teleport одновременно → Roblox кикал/крашил)
+-- и не даёт хопать чаще, чем раз в minServerDwell секунд.
+-- ============================================================
+function Tools.safeTeleport(reason, teleportFn, immediate)
+    if _G.IsHopping then
+        Tools.logDebug("safeTeleport: hop уже идёт, пропуск", { category = "HOP", reason = reason })
+        return false
+    end
+    _G.IsHopping = true
+
+    local elapsed = tick() - (Tools._startTick or tick())
+    if not immediate and elapsed < Tools.minServerDwell then
+        local wait = Tools.minServerDwell - elapsed
+        Tools.logDebug("safeTeleport: добор dwell перед hop", {
+            category = "HOP", reason = reason, wait_s = math.floor(wait),
+        })
+        task.wait(wait)
+    end
+
+    pcall(Tools._flushLogs)
+    local ok, err = pcall(teleportFn)
+    if not ok then
+        _G.IsHopping = false   -- телепорт не стартовал — разрешаем следующую попытку
+        Tools.logError("safeTeleport: телепорт упал", {
+            category = "HOP", reason = reason, error = tostring(err),
+        })
+    end
+    return ok
 end
 
 function Tools.randomDelay(min, max)
@@ -1422,12 +1476,14 @@ function Tools.serverHop()
                     Tools.markServerVisited(sid, Tools.placeId, pCount)
                     Tools.bumpSession("hops")
 
-                    local tpOk, tpErr = pcall(function()
-                        if not scriptQueued and queueFunc then
+                    if not scriptQueued and queueFunc then
+                        pcall(function()
                             queueFunc('loadstring(game:HttpGet("'
                                 .. Tools.scriptUrl .. '?t=' .. tick() .. '"))()')
                             scriptQueued = true
-                        end
+                        end)
+                    end
+                    local tpOk = Tools.safeTeleport("server-hop", function()
                         TeleportService:TeleportToPlaceInstance(Tools.placeId, sid, player)
                     end)
 
@@ -1437,14 +1493,11 @@ function Tools.serverHop()
                             server_id   = sid,
                             duration_ms = durationMs(hopStart),
                         })
-                        -- ensure logs flushed before teleport убивает поток
-                        pcall(Tools._flushLogs)
                         return true
                     else
                         Tools.logWarning("Ошибка телепорта, ищу дальше", {
                             category  = "HOP",
                             server_id = sid,
-                            error     = tostring(tpErr),
                         })
                     end
                 end

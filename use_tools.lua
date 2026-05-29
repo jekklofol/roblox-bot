@@ -1,4 +1,4 @@
-local V                     = "v3.3.0-per-user"
+local V                     = "v3.4.0-safe-teleport"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -138,7 +138,6 @@ task.spawn(function()
         time_on_server = math.floor(tick() - serverStartTick),
     })
     pcall(Tools.endSession)
-    pcall(Tools._flushLogs)
     -- ставим скрипт на следующий сервер если ещё не поставлен
     pcall(function()
         if queueonteleport then
@@ -146,7 +145,10 @@ task.spawn(function()
                 .. SCRIPT_URL .. '?t=' .. tick() .. '"))()')
         end
     end)
-    pcall(function() game:GetService("TeleportService"):Teleport(PLACE_ID, player) end)
+    -- единый шлюз: если hop уже идёт — не дёргаем телепорт повторно
+    Tools.safeTeleport("hardcap-watchdog", function()
+        game:GetService("TeleportService"):Teleport(PLACE_ID, player)
+    end)
 end)
 
 -- ============================================================
@@ -156,7 +158,11 @@ task.spawn(function()
     task.wait(MAX_SERVER_TIME_SEC + 60)
     Tools.logCritical("Fallback watchdog: ещё одна попытка телепорта", { category = "WATCHDOG" })
     pcall(Tools._flushLogs)
-    pcall(function() game:GetService("TeleportService"):Teleport(PLACE_ID, player) end)
+    -- последний резерв: если предыдущий телепорт завис в IsHopping, форсируем
+    _G.IsHopping = false
+    Tools.safeTeleport("fallback-watchdog", function()
+        game:GetService("TeleportService"):Teleport(PLACE_ID, player)
+    end, true)
 end)
 
 -- ============================================================
