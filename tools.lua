@@ -1313,6 +1313,8 @@ function Tools.sendChat(msg)
     task.wait(0.02 + math.random() * 0.02)
     VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
 
+    Tools.lastSentText = msg
+    Tools.lastSentAt   = tick()
     Tools.bumpSession("messages")
     Tools.logInfo("Сообщение отправлено", {
         category    = "CHAT",
@@ -1329,64 +1331,87 @@ Tools.chatMessageBuffer     = {}
 Tools.chatBufferMaxSize     = 50
 Tools.chatListenerConnected = false
 
+-- единая точка приёма сообщения в буфер.
+-- at = tick() (монотонный, для точного окна "после отправки"),
+-- timestamp = os.time() (для совместимости). userId/isSelf — best-effort,
+-- НЕ основной канал идентификации своих (см. checkAndDeactivateIfFiltered: матч по тексту).
+function Tools._pushChatMessage(text, sender, userId)
+    text   = text or ""
+    sender = sender or "Unknown"
+    local isSelf = false
+    if userId and player and userId == player.UserId then isSelf = true end
+    if not isSelf and player and sender == player.Name then isSelf = true end
+    table.insert(Tools.chatMessageBuffer, 1, {
+        text = text, sender = sender, userId = userId or 0,
+        isSelf = isSelf, at = tick(), timestamp = os.time(),
+    })
+    while #Tools.chatMessageBuffer > Tools.chatBufferMaxSize do
+        table.remove(Tools.chatMessageBuffer)
+    end
+end
+
 function Tools.connectChatListener()
     if Tools.chatListenerConnected then return true end
+    local methods = {}
 
-    local TextChatService = game:GetService("TextChatService")
+    -- TextChatService (современный чат). Слушаем И сервис целиком, И каждый канал —
+    -- разные игры/executor'ы доставляют echo по-разному, ловим максимально широко.
     pcall(function()
+        local TextChatService = game:GetService("TextChatService")
+
+        -- сервис-уровневый MessageReceived: ловит сообщения со всех каналов
+        pcall(function()
+            TextChatService.MessageReceived:Connect(function(m)
+                local uid
+                if m.TextSource then uid = m.TextSource.UserId end
+                Tools._pushChatMessage(m.Text, nil, uid)
+            end)
+            table.insert(methods, "TCS.MessageReceived")
+        end)
+
         local channels = TextChatService:WaitForChild("TextChannels", 5)
         if channels then
-            local rbx = channels:FindFirstChild("RBXGeneral")
-            if rbx then
-                rbx.MessageReceived:Connect(function(m)
-                    local text = m.Text or ""
-                    local sender = "Unknown"
-                    local isSelf = false
-                    if m.TextSource then
-                        local uid = m.TextSource.UserId
-                        -- метим своё сообщение по UserId (надёжнее имени: GetPlayerByUserId
-                        -- в некоторых executor'ах не резолвит → раньше sender="Unknown" → count:0)
-                        if player and uid == player.UserId then isSelf = true end
-                        local p = Players:GetPlayerByUserId(uid)
-                        if p then sender = p.Name end
-                    end
-                    table.insert(Tools.chatMessageBuffer, 1, {
-                        text = text, sender = sender, isSelf = isSelf, timestamp = os.time(),
-                    })
-                    while #Tools.chatMessageBuffer > Tools.chatBufferMaxSize do
-                        table.remove(Tools.chatMessageBuffer)
-                    end
+            local function hookChannel(ch)
+                if not ch:IsA("TextChannel") then return end
+                pcall(function()
+                    ch.MessageReceived:Connect(function(m)
+                        local uid, sender
+                        if m.TextSource then
+                            uid = m.TextSource.UserId
+                            local p = Players:GetPlayerByUserId(uid)
+                            if p then sender = p.Name end
+                        end
+                        Tools._pushChatMessage(m.Text, sender, uid)
+                    end)
                 end)
-                Tools.chatListenerConnected = true
-                Tools.logInfo("Chat listener подключён (TextChat)", { category = "CHAT_LISTENER" })
             end
+            for _, ch in ipairs(channels:GetChildren()) do hookChannel(ch) end
+            channels.ChildAdded:Connect(hookChannel) -- каналы создаются не сразу
+            table.insert(methods, "TextChannels")
         end
     end)
 
-    if not Tools.chatListenerConnected then
+    -- Legacy chat (старые игры / запасной путь)
+    pcall(function()
         local RS = game:GetService("ReplicatedStorage")
         local ev = RS:FindFirstChild("DefaultChatSystemChatEvents")
         if ev then
             local on = ev:FindFirstChild("OnMessageDoneFiltering")
             if on then
                 on.OnClientEvent:Connect(function(d)
-                    local text = d.Message or d.FilteredMessage or ""
-                    local sender = d.FromSpeaker or "Unknown"
-                    local isSelf = (player and sender == player.Name) or false
-                    table.insert(Tools.chatMessageBuffer, 1, {
-                        text = text, sender = sender, isSelf = isSelf, timestamp = os.time(),
-                    })
-                    while #Tools.chatMessageBuffer > Tools.chatBufferMaxSize do
-                        table.remove(Tools.chatMessageBuffer)
-                    end
+                    Tools._pushChatMessage(d.Message or d.FilteredMessage, d.FromSpeaker, nil)
                 end)
-                Tools.chatListenerConnected = true
-                Tools.logInfo("Chat listener подключён (Legacy)", { category = "CHAT_LISTENER" })
+                table.insert(methods, "Legacy")
             end
         end
-    end
+    end)
 
-    if not Tools.chatListenerConnected then
+    Tools.chatListenerConnected = #methods > 0
+    if Tools.chatListenerConnected then
+        Tools.logInfo("Chat listener подключён", {
+            category = "CHAT_LISTENER", methods = table.concat(methods, ","),
+        })
+    else
         Tools.logError("Не удалось подключиться к чату", { category = "CHAT_LISTENER" })
     end
     return Tools.chatListenerConnected
@@ -1455,42 +1480,82 @@ function Tools.isMessageFiltered(messages, hashThreshold)
     return false, nil
 end
 
+-- является ли `cand` зацензуренной версией `orig`.
+-- Roblox-фильтр заменяет проблемные символы на '#' (иногда '*'), СОХРАНЯЯ длину строки
+-- и пробелы. Поэтому censored-версия = та же длина, на немаскированных позициях те же
+-- символы, и есть хотя бы один '#'/'*'. Сравнение не зависит от TextSource/имени.
+local function isCensoredVersionOf(cand, orig)
+    if not cand or not orig then return false end
+    if #orig < 4 or #cand ~= #orig then return false end
+    local masks = 0
+    for i = 1, #orig do
+        local c = cand:sub(i, i)
+        if c == "#" or c == "*" then
+            masks = masks + 1
+        elseif c ~= orig:sub(i, i) then
+            return false -- немаскированный символ не совпал → это другое сообщение
+        end
+    end
+    return masks > 0
+end
+
 -- кулдаун (в минутах) для объявления, чьё сообщение зацензурил чат-фильтр.
 -- НЕ деактивируем перманентно — иначе любой ложный срабат выжигает пул навсегда.
 Tools.filteredCooldownMinutes = 360
 
-function Tools.checkAndDeactivateIfFiltered(adMessageId, waitTime)
-    waitTime = waitTime or 2
+-- sentText — точный отправленный текст (передаётся из runBot). Идентификация своего
+-- идёт по СОДЕРЖИМОМУ, а не по TextSource: executor + VirtualInputManager не дают
+-- надёжный TextSource.UserId на echo → раньше getMyRecentChatMessages всегда возвращал 0.
+function Tools.checkAndDeactivateIfFiltered(adMessageId, waitTime, sentText)
+    waitTime = waitTime or 3
     local t0 = tick()
+    local windowStart = (Tools.lastSentAt or t0) - 1.0 -- echo мог прийти чуть раньше входа
+    sentText = sentText or Tools.lastSentText
     Tools.logDebug("Проверка фильтрации", {
         category   = "FILTER",
         message_id = adMessageId,
         wait_time  = waitTime,
+        has_text   = sentText ~= nil,
     })
     task.wait(waitTime)
 
-    -- ВАЖНО: проверяем ТОЛЬКО свои сообщения, а не весь чат.
-    -- Раньше сюда попадал чужой зацензуренный текст и деактивировал наше объявление.
-    local mine = Tools.getMyRecentChatMessages(5)
-    Tools.logDebug("Получены свои сообщения чата", {
-        category   = "FILTER",
-        count      = #mine,
-        sample     = mine[1] or "",
-    })
-
-    if #mine == 0 then
-        -- своё сообщение ещё не долетело до буфера — не делаем выводов, считаем что ок
-        Tools.logDebug("Свои сообщения не найдены — пропуск фильтр-чека",
+    if not sentText or sentText == "" then
+        Tools.logDebug("Нет отправленного текста — пропуск фильтр-чека",
             { category = "FILTER", message_id = adMessageId })
         return false
     end
 
-    local filtered, badMsg = Tools.isMessageFiltered(mine, 3)
-    if filtered then
-        -- ставим длинный cooldown вместо перманентной деактивации
+    -- собираем кандидатов из буфера, попавших туда ПОСЛЕ отправки нашего сообщения
+    local total, windowCount = #Tools.chatMessageBuffer, 0
+    local exactHit, censoredHit, badMsg = false, false, nil
+    for i = 1, total do
+        local m = Tools.chatMessageBuffer[i]
+        if (m.at or 0) >= windowStart then
+            windowCount = windowCount + 1
+            if m.text == sentText then
+                exactHit = true
+            elseif isCensoredVersionOf(m.text, sentText) then
+                censoredHit = true
+                badMsg = m.text
+            end
+        end
+    end
+
+    Tools.logDebug("Фильтр-чек по тексту", {
+        category     = "FILTER",
+        message_id   = adMessageId,
+        buffer_total = total,
+        window_count = windowCount,
+        exact_hit    = exactHit,
+        censored_hit = censoredHit,
+    })
+
+    if censoredHit then
+        -- наше сообщение вернулось в зацензуренном виде → длинный cooldown, не перм-деактивация
         Tools.logWarning("Своё сообщение зацензурено — длинный cooldown", {
             category      = "FILTER",
             message_id    = adMessageId,
+            sent_text     = sentText,
             filtered_text = badMsg,
             cooldown_min  = Tools.filteredCooldownMinutes,
             duration_ms   = durationMs(t0),
@@ -1500,9 +1565,12 @@ function Tools.checkAndDeactivateIfFiltered(adMessageId, waitTime)
         end
         return true
     end
+
+    -- exactHit → точно прошло; нет echo вообще → не делаем выводов (консервативно: не фильтр)
     Tools.logInfo("Сообщение прошло без фильтрации", {
         category    = "FILTER",
         message_id  = adMessageId,
+        echo_found  = exactHit,
         duration_ms = durationMs(t0),
     })
     return false

@@ -1,4 +1,4 @@
-local V                     = "v3.6.0-collision-brand-selfchat"
+local V                     = "v3.7.0-filter-text-match"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -116,7 +116,7 @@ local function runBot()
         local ad = Tools.getAdMessage()
         if ad then
             Tools.sendChat(ad.message)
-            local filtered = Tools.checkAndDeactivateIfFiltered(ad.id, 2)
+            local filtered = Tools.checkAndDeactivateIfFiltered(ad.id, 3, ad.message)
             if not filtered then
                 Tools.markAdMessageUsed(ad.id, ad.cooldown_minutes or 60)
             end
