@@ -679,13 +679,26 @@ function Tools.refreshServerPool(placeId, force)
     )
     local ok, resp = pcall(function() return httprequest({ Url = url }) end)
     if not ok or not resp or resp.StatusCode ~= 200 then
-        Tools.logWarning("Refresh пула: HTTP ошибка", {
-            category    = "POOL",
-            status      = resp and resp.StatusCode or "no_response",
-            duration_ms = durationMs(t0),
-        })
+        local status = resp and resp.StatusCode or "no_response"
+        -- при 429 — экспоненциальный бэкофф, чтобы не долбить games API
+        if status == 429 then
+            Tools._poolBackoff = math.min((Tools._poolBackoff or 30) * 2, 600)
+            Tools._poolRateLimitedUntil = os.time() + Tools._poolBackoff
+            Tools.logWarning("Refresh пула: 429, бэкофф", {
+                category     = "POOL",
+                backoff_sec  = Tools._poolBackoff,
+                duration_ms  = durationMs(t0),
+            })
+        else
+            Tools.logWarning("Refresh пула: HTTP ошибка", {
+                category    = "POOL",
+                status      = status,
+                duration_ms = durationMs(t0),
+            })
+        end
         return false
     end
+    Tools._poolBackoff = 30   -- успех — сбрасываем бэкофф
 
     local data = HttpService:JSONDecode(resp.Body)
     if not (data and data.data and #data.data > 0) then return false end
@@ -710,7 +723,11 @@ function Tools.startPoolRefresher(placeId, intervalSec)
         -- стартовый джиттер 0-30с, чтобы боты не били API одновременно
         task.wait(math.random() * 30)
         while Tools.enabled do
-            pcall(Tools.refreshServerPool, placeId, false)
+            -- уважаем бэкофф после 429
+            local until_ = Tools._poolRateLimitedUntil or 0
+            if os.time() >= until_ then
+                pcall(Tools.refreshServerPool, placeId, false)
+            end
             -- jitter в основном цикле: ±30%
             task.wait(intervalSec * (0.85 + math.random() * 0.30))
         end
@@ -1307,6 +1324,23 @@ function Tools.getRecentChatMessages(count)
     return out
 end
 
+-- только наши собственные сообщения из чата (sender == имя текущего игрока).
+-- нужно, чтобы фильтр-чек не реагировал на чужой зацензуренный текст.
+function Tools.getMyRecentChatMessages(count)
+    count = count or 5
+    if not Tools.chatListenerConnected then Tools.connectChatListener() end
+    local myName = (player and player.Name) or ""
+    local out = {}
+    for i = 1, #Tools.chatMessageBuffer do
+        local m = Tools.chatMessageBuffer[i]
+        if m.sender == myName then
+            table.insert(out, m.text)
+            if #out >= count then break end
+        end
+    end
+    return out
+end
+
 -- Несколько эвристик фильтрации (хеши, звёздочки, замены)
 function Tools.isMessageFiltered(messages, hashThreshold)
     hashThreshold = hashThreshold or 3
@@ -1342,6 +1376,10 @@ function Tools.isMessageFiltered(messages, hashThreshold)
     return false, nil
 end
 
+-- кулдаун (в минутах) для объявления, чьё сообщение зацензурил чат-фильтр.
+-- НЕ деактивируем перманентно — иначе любой ложный срабат выжигает пул навсегда.
+Tools.filteredCooldownMinutes = 360
+
 function Tools.checkAndDeactivateIfFiltered(adMessageId, waitTime)
     waitTime = waitTime or 2
     local t0 = tick()
@@ -1352,28 +1390,35 @@ function Tools.checkAndDeactivateIfFiltered(adMessageId, waitTime)
     })
     task.wait(waitTime)
 
-    local recent = Tools.getRecentChatMessages(15)
-    Tools.logDebug("Получены сообщения чата", {
+    -- ВАЖНО: проверяем ТОЛЬКО свои сообщения, а не весь чат.
+    -- Раньше сюда попадал чужой зацензуренный текст и деактивировал наше объявление.
+    local mine = Tools.getMyRecentChatMessages(5)
+    Tools.logDebug("Получены свои сообщения чата", {
         category   = "FILTER",
-        count      = #recent,
-        sample     = recent[1] or "",
+        count      = #mine,
+        sample     = mine[1] or "",
     })
 
-    if #recent == 0 then
-        Tools.logWarning("Чат пуст — не могу проверить фильтр",
+    if #mine == 0 then
+        -- своё сообщение ещё не долетело до буфера — не делаем выводов, считаем что ок
+        Tools.logDebug("Свои сообщения не найдены — пропуск фильтр-чека",
             { category = "FILTER", message_id = adMessageId })
         return false
     end
 
-    local filtered, badMsg = Tools.isMessageFiltered(recent, 3)
+    local filtered, badMsg = Tools.isMessageFiltered(mine, 3)
     if filtered then
-        Tools.logWarning("Фильтрация подтверждена", {
+        -- ставим длинный cooldown вместо перманентной деактивации
+        Tools.logWarning("Своё сообщение зацензурено — длинный cooldown", {
             category      = "FILTER",
             message_id    = adMessageId,
             filtered_text = badMsg,
+            cooldown_min  = Tools.filteredCooldownMinutes,
             duration_ms   = durationMs(t0),
         })
-        if adMessageId then Tools.deactivateAdMessage(adMessageId) end
+        if adMessageId then
+            Tools.markAdMessageUsed(adMessageId, Tools.filteredCooldownMinutes)
+        end
         return true
     end
     Tools.logInfo("Сообщение прошло без фильтрации", {

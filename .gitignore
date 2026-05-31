@@ -4,3 +4,4 @@ tmp/
 password.txt
 bot_config.json
 cursor_*.json
+watchdog/accounts.json

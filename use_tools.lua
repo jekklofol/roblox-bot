@@ -1,11 +1,15 @@
-local V                     = "v3.4.0-safe-teleport"
+local V                     = "v3.5.0-filter-fix-dwell"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
 local SEARCH_TIMEOUT        = 60
 local TELEPORT_COOLDOWN     = 15
-local MAX_SERVER_TIME_SEC   = 120   -- жёсткий cap: больше 2 минут на одном сервере не сидим
+local MAX_SERVER_TIME_SEC   = 360   -- жёсткий cap на время на одном сервере
 local MIN_PLAYERS_FOR_AD    = 3     -- если меньше — реклама бесполезна, сразу hop
+local TARGET_DWELL_MIN      = 150   -- минимально сидим на сервере (реже телепорты = меньше крашей/детекта)
+local TARGET_DWELL_MAX      = 260   -- максимально (до hard cap)
+local AD_GAP_MIN            = 45    -- интервал между рекламами в рамках одного захода
+local AD_GAP_MAX            = 80
 local SCRIPT_URL            = "https://raw.githubusercontent.com/jekklofol/roblox-bot/refs/heads/main/use_tools.lua"
 
 local Tools = loadstring(game:HttpGet(
@@ -91,7 +95,8 @@ local function runBot()
         Tools.logWarning("PlayButton не появился — пропускаю шаг", { category = "BOT" })
     end
 
-    if Tools.waitForAdoptionIslandButton(20) then
+    -- Adoption Island не на каждом сервере — короткий таймаут, шаг некритичный
+    if Tools.waitForAdoptionIslandButton(6) then
         Tools.randomDelay(1, 3)
         local ok = Tools.clickAdoptionIslandButton()
         if not ok then
@@ -106,16 +111,30 @@ local function runBot()
 
     Tools.randomDelay(5, 10)
 
-    local ad = Tools.getAdMessage()
-    if ad then
-        Tools.sendChat(ad.message)
-        local filtered = Tools.checkAndDeactivateIfFiltered(ad.id, 2)
-        if not filtered then
-            Tools.markAdMessageUsed(ad.id, ad.cooldown_minutes or 60)
+    -- отправка одного объявления с проверкой фильтра
+    local function sendOneAd()
+        local ad = Tools.getAdMessage()
+        if ad then
+            Tools.sendChat(ad.message)
+            local filtered = Tools.checkAndDeactivateIfFiltered(ad.id, 2)
+            if not filtered then
+                Tools.markAdMessageUsed(ad.id, ad.cooldown_minutes or 60)
+            end
+        else
+            Tools.logWarning("Нет доступной рекламы — fallback", { category = "AD" })
+            Tools.sendChat("RBLX . PW - sell you pets for real money")
         end
-    else
-        Tools.logWarning("Нет доступной рекламы — fallback", { category = "AD" })
-        Tools.sendChat("RBLX . PW - sell you pets for real money")
+    end
+
+    -- держимся на сервере TARGET_DWELL секунд, шлём несколько реклам с паузами.
+    -- реже телепортимся → меньше нагрузка/пики памяти/teleport-флаги, больше реклам за заход.
+    local dwellTarget = TARGET_DWELL_MIN + math.random() * (TARGET_DWELL_MAX - TARGET_DWELL_MIN)
+    sendOneAd()
+    while Tools.getBotState().running and (tick() - serverStartTick) < dwellTarget do
+        Tools.randomDelay(AD_GAP_MIN, AD_GAP_MAX)
+        if not Tools.getBotState().running then break end
+        if #Players:GetPlayers() < MIN_PLAYERS_FOR_AD then break end
+        sendOneAd()
     end
 
     Tools.randomDelay(2, 5)

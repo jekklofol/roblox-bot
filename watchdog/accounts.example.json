@@ -1,0 +1,5 @@
+{
+  "_comment": "Скопируй в accounts.json и впиши команду запуска для каждого аккаунта (RAMP CLI / deep-link / запуск эмулятора). username = поле bots.username в Supabase.",
+  "Vortas10": "C:\\RAMP\\rbxalt.exe launch --account Vortas10 --place 920587237",
+  "Onyxez15": "C:\\RAMP\\rbxalt.exe launch --account Onyxez15 --place 920587237"
+}
