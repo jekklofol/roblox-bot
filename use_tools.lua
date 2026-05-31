@@ -1,4 +1,4 @@
-local V                     = "v3.5.0-filter-fix-dwell"
+local V                     = "v3.6.0-collision-brand-selfchat"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100

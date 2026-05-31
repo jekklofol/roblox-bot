@@ -457,9 +457,14 @@ function Tools.getCasualMessage()
     return pool[math.random(1, #pool)].text
 end
 
+-- классификация бренда по тексту. Сепараторы домена разнятся: adoptme.pw /
+-- adoptme-pw / adoptme,pw / adoptmepw / "a d o p t m e p w" / "adopt me dot pw".
+-- Приём: убираем "dot"-обфускацию, затем ВСЁ кроме букв → остаётся "adoptmepw"/"rblxpw".
 local function _classifyBrand(text)
     local t = string.lower(text or "")
-    if t:find("adoptme%.pw") or t:find("adopt%-me%.pw") or t:find("adopt%s*me%s*%.%s*pw") then
+    t = t:gsub("dot", "")                 -- "adopt me dot pw" → "...  pw"
+    local letters = t:gsub("[^%a]", "")   -- "adoptme . pw"/"a d o p t m e p w" → "adoptmepw"
+    if letters:find("adoptmepw", 1, true) then
         return "adoptme"
     end
     return "rblx"
@@ -654,11 +659,66 @@ function Tools.pickServerFromPool(placeId, minPlayers, maxPlayers)
         p_min_players = minPlayers or Tools.minPlayersPreferred,
         p_max_players = maxPlayers or Tools.maxPlayersAllowed,
         p_visited_hrs = 12,
+        -- было 30 (дефолт): при сварме ботов 30-мин окно "недавно посещён"
+        -- покрывало почти весь пул → rpc отдавал nil всем → слепой reroll → funnel.
+        p_shared_minutes = 10,
     })
     if data and type(data) == "table" and data[1] and data[1].server_id then
         return data[1]
     end
     return nil
+end
+
+-- relaxed-выбор: любой свежий сервер из пула напрямую через REST, исключаем текущий job.
+-- fallback когда rpc_pick_server вернул nil (пул "разобран" свармом) — чтобы НЕ делать
+-- слепой Teleport(placeId) без jobId (Roblox сваливает всех на один заполняющийся сервер).
+function Tools.pickAnyPoolServer(placeId)
+    local minP = Tools.minPlayersPreferred or 5
+    local maxP = Tools.maxPlayersAllowed or 100
+    local rows = Tools.sb("GET", "server_pool", {
+        select       = "server_id,player_count,max_players",
+        place_id     = "eq." .. placeId,
+        expires_at   = "gt." .. isoNow(),
+        player_count = "gte." .. minP,
+        order        = "fetched_at.desc",
+        limit        = "60",
+    })
+    if type(rows) ~= "table" or #rows == 0 then return nil end
+    local cur = game.JobId
+    local cand = {}
+    for _, r in ipairs(rows) do
+        local pc = tonumber(r.player_count) or 0
+        local mx = tonumber(r.max_players) or 0
+        if r.server_id and r.server_id ~= cur
+           and pc <= maxP and (mx - pc) >= 5 then
+            table.insert(cand, { server_id = r.server_id, player_count = pc })
+        end
+    end
+    if #cand == 0 then return nil end
+    return cand[math.random(1, #cand)]
+end
+
+-- прыжок на КОНКРЕТНЫЙ свободный сервер (jobId), а не слепой матчмейкинг.
+-- порядок: нормальный rpc_pick (учитывает occupied/visited) → relaxed REST-пик.
+function Tools.teleportToConcreteServer(reason)
+    local picked = Tools.pickServerFromPool(Tools.placeId)
+    if not (picked and picked.server_id) then
+        picked = Tools.pickAnyPoolServer(Tools.placeId)
+    end
+    if not (picked and picked.server_id) or picked.server_id == game.JobId then
+        return false
+    end
+    Tools.markServerVisited(picked.server_id, Tools.placeId, picked.player_count)
+    Tools.markJobIdVisitedLocal(Tools.placeId, picked.server_id)
+    local ok = Tools.safeTeleport(reason, function()
+        TeleportService:TeleportToPlaceInstance(Tools.placeId, picked.server_id, player)
+    end, true)
+    if ok then
+        Tools.logInfo("Прыжок на конкретный свободный сервер", {
+            category = "HOP", server_id = picked.server_id, reason = reason,
+        })
+    end
+    return ok
 end
 
 function Tools.refreshServerPool(placeId, force)
@@ -779,15 +839,23 @@ function Tools.fastServerHop()
             { category = "HOP" })
     end
 
-    -- 3. Reroll: Roblox сам выбирает случайный публичный сервер
+    -- 3. Пул пуст по строгому rpc — пробуем конкретный свободный сервер из пула
+    --    (relaxed REST-пик), прежде чем слепо доверять матчмейкингу Roblox.
+    if Tools.teleportToConcreteServer("hop-concrete") then
+        Tools.bumpSession("hops")
+        Tools.logInfo("Hop на конкретный сервер из пула", {
+            category = "HOP", duration_ms = durationMs(hopStart),
+        })
+        return true
+    end
+
+    -- 4. Reroll: Roblox сам выбирает случайный публичный сервер
     --    Если попадём на тот же job — стартовая проверка в use_tools мгновенно сделает повтор.
     Tools.markJobIdVisitedLocal(Tools.placeId, game.JobId)
     Tools.bumpSession("hops")
 
     -- параллельно — если пул был пуст, инициируем refresh для следующих ботов
-    if not picked then
-        task.spawn(function() pcall(Tools.refreshServerPool, Tools.placeId, true) end)
-    end
+    task.spawn(function() pcall(Tools.refreshServerPool, Tools.placeId, true) end)
 
     Tools.logInfo("Reroll teleport (без jobId)", {
         category    = "HOP",
@@ -899,9 +967,13 @@ function Tools.checkServerSharedWithOtherBot(scriptUrl)
                 .. scriptUrl .. '?t=' .. tick() .. '"))()')
         end)
     end
-    Tools.safeTeleport("collision-reroll", function()
-        TeleportService:Teleport(Tools.placeId, player)
-    end, true)
+    -- уходим на КОНКРЕТНЫЙ свободный сервер, а не слепым матчмейкингом
+    -- (иначе Roblox снова сваливает на тот же заполняющийся → пинг-понг до лимита reroll'ов)
+    if not Tools.teleportToConcreteServer("collision-concrete") then
+        Tools.safeTeleport("collision-reroll", function()
+            TeleportService:Teleport(Tools.placeId, player)
+        end, true)
+    end
     return true
 end
 
@@ -1269,12 +1341,17 @@ function Tools.connectChatListener()
                 rbx.MessageReceived:Connect(function(m)
                     local text = m.Text or ""
                     local sender = "Unknown"
+                    local isSelf = false
                     if m.TextSource then
-                        local p = Players:GetPlayerByUserId(m.TextSource.UserId)
+                        local uid = m.TextSource.UserId
+                        -- метим своё сообщение по UserId (надёжнее имени: GetPlayerByUserId
+                        -- в некоторых executor'ах не резолвит → раньше sender="Unknown" → count:0)
+                        if player and uid == player.UserId then isSelf = true end
+                        local p = Players:GetPlayerByUserId(uid)
                         if p then sender = p.Name end
                     end
                     table.insert(Tools.chatMessageBuffer, 1, {
-                        text = text, sender = sender, timestamp = os.time(),
+                        text = text, sender = sender, isSelf = isSelf, timestamp = os.time(),
                     })
                     while #Tools.chatMessageBuffer > Tools.chatBufferMaxSize do
                         table.remove(Tools.chatMessageBuffer)
@@ -1295,8 +1372,9 @@ function Tools.connectChatListener()
                 on.OnClientEvent:Connect(function(d)
                     local text = d.Message or d.FilteredMessage or ""
                     local sender = d.FromSpeaker or "Unknown"
+                    local isSelf = (player and sender == player.Name) or false
                     table.insert(Tools.chatMessageBuffer, 1, {
-                        text = text, sender = sender, timestamp = os.time(),
+                        text = text, sender = sender, isSelf = isSelf, timestamp = os.time(),
                     })
                     while #Tools.chatMessageBuffer > Tools.chatBufferMaxSize do
                         table.remove(Tools.chatMessageBuffer)
@@ -1333,7 +1411,8 @@ function Tools.getMyRecentChatMessages(count)
     local out = {}
     for i = 1, #Tools.chatMessageBuffer do
         local m = Tools.chatMessageBuffer[i]
-        if m.sender == myName then
+        -- isSelf метится по UserId при захвате; sender-имя как запасной матч
+        if m.isSelf or (myName ~= "" and m.sender == myName) then
             table.insert(out, m.text)
             if #out >= count then break end
         end
