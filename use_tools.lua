@@ -1,4 +1,4 @@
-local V                     = "v3.7.0-filter-text-match"
+local V                     = "v3.7.1-filter-diag"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100

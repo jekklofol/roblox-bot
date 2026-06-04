@@ -1528,10 +1528,24 @@ function Tools.checkAndDeactivateIfFiltered(adMessageId, waitTime, sentText)
     -- собираем кандидатов из буфера, попавших туда ПОСЛЕ отправки нашего сообщения
     local total, windowCount = #Tools.chatMessageBuffer, 0
     local exactHit, censoredHit, badMsg = false, false, nil
+    local selfInBuffer, windowSamples, bufferSamples = 0, {}, {}
     for i = 1, total do
         local m = Tools.chatMessageBuffer[i]
+        if m.isSelf then selfInBuffer = selfInBuffer + 1 end
+        if i <= 8 then
+            table.insert(bufferSamples, {
+                t = (m.text or ""):sub(1, 60), s = m.sender,
+                self = m.isSelf and 1 or 0, dt = (m.at or 0) - windowStart,
+            })
+        end
         if (m.at or 0) >= windowStart then
             windowCount = windowCount + 1
+            if #windowSamples < 8 then
+                table.insert(windowSamples, {
+                    t = (m.text or ""):sub(1, 60), s = m.sender,
+                    len = #(m.text or ""), self = m.isSelf and 1 or 0,
+                })
+            end
             if m.text == sentText then
                 exactHit = true
             elseif isCensoredVersionOf(m.text, sentText) then
@@ -1548,6 +1562,13 @@ function Tools.checkAndDeactivateIfFiltered(adMessageId, waitTime, sentText)
         window_count = windowCount,
         exact_hit    = exactHit,
         censored_hit = censoredHit,
+        -- DIAG v3.7.1: почему echo не находится
+        sent_text       = sentText,
+        sent_len        = #sentText,
+        self_in_buffer  = selfInBuffer,
+        listener_ok     = Tools.chatListenerConnected,
+        window_samples  = windowSamples,
+        buffer_samples  = bufferSamples,
     })
 
     if censoredHit then
