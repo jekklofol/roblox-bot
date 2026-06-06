@@ -1,4 +1,4 @@
-local V                     = "v3.12.0-ad-sendasync"
+local V                     = "v3.12.1-ad-sendasync-wait"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100

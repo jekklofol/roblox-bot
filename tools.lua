@@ -1375,14 +1375,31 @@ function Tools.sendChatAsync(msg)
     Tools.lastSentAt   = tick()
     Tools.bumpSession("messages")
 
-    local status   = msgObj.Status
+    -- SendAsync в Delta отдаёт объект ещё «в полёте» (Status = Sending); финальный
+    -- статус (Success/Floodchecked/ошибка фильтра) и отфильтрованный .Text приходят
+    -- асинхронно на ТОТ ЖЕ объект. Поэтому ждём, пока статус перестанет быть Sending,
+    -- и только потом классифицируем. Без этого 100% реклам ложно считались "blocked".
+    local status = msgObj.Status
+    if status == Enum.TextChatMessageStatus.Sending then
+        local deadline = tick() + 3
+        repeat
+            task.wait(0.15)
+            status = msgObj.Status
+        until status ~= Enum.TextChatMessageStatus.Sending or tick() > deadline
+    end
+
     local filtered = msgObj.Text
     local result
     if status == Enum.TextChatMessageStatus.Success then
         result = (_censoredRatio(msg, filtered) > 0) and "censored" or "ok"
     elseif status == Enum.TextChatMessageStatus.Floodchecked then
         result = "flood"
+    elseif status == Enum.TextChatMessageStatus.Sending then
+        -- статус так и не разрешился за таймаут — НЕ знаем, прошло или нет.
+        -- считаем отдельной категорией, а не "blocked" (иначе статистика снова врёт).
+        result = "pending"
     else
+        -- терминальные ошибки: TextFilterFailed / InvalidPrivacySettings / прочее
         result = "blocked"
     end
     Tools.filterStats[result] = (Tools.filterStats[result] or 0) + 1
@@ -1414,7 +1431,7 @@ Tools._selfEchoMax     = 20
 Tools._onIncomingHooked = false
 
 -- статистика фильтрации за сессию (видно в логах: сколько ушло в блок/прошло)
-Tools.filterStats = { ok = 0, censored = 0, flood = 0, blocked = 0, no_echo = 0 }
+Tools.filterStats = { ok = 0, censored = 0, flood = 0, blocked = 0, pending = 0, no_echo = 0 }
 
 -- единая точка приёма сообщения в буфер.
 -- at = tick() (монотонный, для точного окна "после отправки"),
