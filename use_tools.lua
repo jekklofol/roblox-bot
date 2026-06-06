@@ -1,4 +1,4 @@
-local V                     = "v3.7.1-filter-diag"
+local V                     = "v3.9.0-filter-onincoming"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100

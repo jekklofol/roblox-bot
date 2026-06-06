@@ -1331,6 +1331,16 @@ Tools.chatMessageBuffer     = {}
 Tools.chatBufferMaxSize     = 50
 Tools.chatListenerConnected = false
 
+-- надёжный канал СВОЕГО эха: TextChatService.OnIncomingMessage на отправителе
+-- срабатывает дважды (Sending → финал с отфильтрованным текстом). MessageReceived
+-- свои сообщения от VirtualInputManager не отдаёт (self_in_buffer=0), отсюда фикс.
+Tools._selfEchoes      = {}
+Tools._selfEchoMax     = 20
+Tools._onIncomingHooked = false
+
+-- статистика фильтрации за сессию (видно в логах: сколько ушло в блок/прошло)
+Tools.filterStats = { ok = 0, censored = 0, flood = 0, blocked = 0, no_echo = 0 }
+
 -- единая точка приёма сообщения в буфер.
 -- at = tick() (монотонный, для точного окна "после отправки"),
 -- timestamp = os.time() (для совместимости). userId/isSelf — best-effort,
@@ -1389,6 +1399,36 @@ function Tools.connectChatListener()
             channels.ChildAdded:Connect(hookChannel) -- каналы создаются не сразу
             table.insert(methods, "TextChannels")
         end
+    end)
+
+    -- OnIncomingMessage: единственный надёжный канал своего эха (вкл. отфильтрованный текст).
+    -- Колбэк один на сервис — сохраняем предыдущий и проксируем, чтобы не сломать игровой чат.
+    pcall(function()
+        if Tools._onIncomingHooked then return end
+        local TCS = game:GetService("TextChatService")
+        local prev = TCS.OnIncomingMessage
+        TCS.OnIncomingMessage = function(message)
+            pcall(function()
+                local ts = message.TextSource
+                if ts and player and ts.UserId == player.UserId then
+                    -- финал (не Sending) = серверная отфильтрованная версия нашего текста
+                    if message.Status ~= Enum.TextChatMessageStatus.Sending then
+                        table.insert(Tools._selfEchoes, 1, {
+                            text   = message.Text,
+                            at     = tick(),
+                            status = tostring(message.Status),
+                        })
+                        while #Tools._selfEchoes > Tools._selfEchoMax do
+                            table.remove(Tools._selfEchoes)
+                        end
+                    end
+                end
+            end)
+            if prev then return prev(message) end
+            return nil
+        end
+        Tools._onIncomingHooked = true
+        table.insert(methods, "OnIncomingMessage")
     end)
 
     -- Legacy chat (старые игры / запасной путь)
@@ -1503,82 +1543,48 @@ end
 -- НЕ деактивируем перманентно — иначе любой ложный срабат выжигает пул навсегда.
 Tools.filteredCooldownMinutes = 360
 
--- sentText — точный отправленный текст (передаётся из runBot). Идентификация своего
--- идёт по СОДЕРЖИМОМУ, а не по TextSource: executor + VirtualInputManager не дают
--- надёжный TextSource.UserId на echo → раньше getMyRecentChatMessages всегда возвращал 0.
+-- Источник истины — Tools._selfEchoes (наполняется из OnIncomingMessage финальной,
+-- отфильтрованной версией нашего текста). Сравнение по содержимому: exact = прошло,
+-- censored (та же длина, есть #/*) = зацензурено. Возврат true = фильтр сработал.
 function Tools.checkAndDeactivateIfFiltered(adMessageId, waitTime, sentText)
     waitTime = waitTime or 3
     local t0 = tick()
     local windowStart = (Tools.lastSentAt or t0) - 1.0 -- echo мог прийти чуть раньше входа
     sentText = sentText or Tools.lastSentText
-    Tools.logDebug("Проверка фильтрации", {
-        category   = "FILTER",
-        message_id = adMessageId,
-        wait_time  = waitTime,
-        has_text   = sentText ~= nil,
-    })
     task.wait(waitTime)
 
     if not sentText or sentText == "" then
+        Tools.filterStats.no_echo = Tools.filterStats.no_echo + 1
         Tools.logDebug("Нет отправленного текста — пропуск фильтр-чека",
             { category = "FILTER", message_id = adMessageId })
         return false
     end
 
-    -- собираем кандидатов из буфера, попавших туда ПОСЛЕ отправки нашего сообщения
-    local total, windowCount = #Tools.chatMessageBuffer, 0
-    local exactHit, censoredHit, badMsg = false, false, nil
-    local selfInBuffer, windowSamples, bufferSamples = 0, {}, {}
-    for i = 1, total do
-        local m = Tools.chatMessageBuffer[i]
-        if m.isSelf then selfInBuffer = selfInBuffer + 1 end
-        if i <= 8 then
-            table.insert(bufferSamples, {
-                t = (m.text or ""):sub(1, 60), s = m.sender,
-                self = m.isSelf and 1 or 0, dt = (m.at or 0) - windowStart,
-            })
-        end
-        if (m.at or 0) >= windowStart then
-            windowCount = windowCount + 1
-            if #windowSamples < 8 then
-                table.insert(windowSamples, {
-                    t = (m.text or ""):sub(1, 60), s = m.sender,
-                    len = #(m.text or ""), self = m.isSelf and 1 or 0,
-                })
-            end
-            if m.text == sentText then
+    -- ищем финальное эхо нашего текста среди self-echoes после момента отправки
+    local exactHit, censoredHit, badMsg, badStatus = false, false, nil, nil
+    local echoSeen = 0
+    for _, e in ipairs(Tools._selfEchoes) do
+        if (e.at or 0) >= windowStart then
+            echoSeen = echoSeen + 1
+            if e.text == sentText then
                 exactHit = true
-            elseif isCensoredVersionOf(m.text, sentText) then
-                censoredHit = true
-                badMsg = m.text
+            elseif isCensoredVersionOf(e.text, sentText) then
+                censoredHit, badMsg, badStatus = true, e.text, e.status
             end
         end
     end
 
-    Tools.logDebug("Фильтр-чек по тексту", {
-        category     = "FILTER",
-        message_id   = adMessageId,
-        buffer_total = total,
-        window_count = windowCount,
-        exact_hit    = exactHit,
-        censored_hit = censoredHit,
-        -- DIAG v3.7.1: почему echo не находится
-        sent_text       = sentText,
-        sent_len        = #sentText,
-        self_in_buffer  = selfInBuffer,
-        listener_ok     = Tools.chatListenerConnected,
-        window_samples  = windowSamples,
-        buffer_samples  = bufferSamples,
-    })
-
     if censoredHit then
-        -- наше сообщение вернулось в зацензуренном виде → длинный cooldown, не перм-деактивация
+        Tools.filterStats.censored = Tools.filterStats.censored + 1
         Tools.logWarning("Своё сообщение зацензурено — длинный cooldown", {
             category      = "FILTER",
+            result        = "censored",
             message_id    = adMessageId,
             sent_text     = sentText,
             filtered_text = badMsg,
+            status        = badStatus,
             cooldown_min  = Tools.filteredCooldownMinutes,
+            stats         = Tools.filterStats,
             duration_ms   = durationMs(t0),
         })
         if adMessageId then
@@ -1587,11 +1593,19 @@ function Tools.checkAndDeactivateIfFiltered(adMessageId, waitTime, sentText)
         return true
     end
 
-    -- exactHit → точно прошло; нет echo вообще → не делаем выводов (консервативно: не фильтр)
-    Tools.logInfo("Сообщение прошло без фильтрации", {
+    if exactHit then
+        Tools.filterStats.ok = Tools.filterStats.ok + 1
+    else
+        -- эхо не пришло — не делаем выводов (консервативно: не фильтр)
+        Tools.filterStats.no_echo = Tools.filterStats.no_echo + 1
+    end
+    Tools.logInfo("Фильтр-чек: сообщение прошло", {
         category    = "FILTER",
+        result      = exactHit and "ok" or "no_echo",
         message_id  = adMessageId,
         echo_found  = exactHit,
+        echo_seen   = echoSeen,
+        stats       = Tools.filterStats,
         duration_ms = durationMs(t0),
     })
     return false
