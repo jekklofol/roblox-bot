@@ -429,11 +429,11 @@ function Tools.preloadMessages(force)
     }) or {}
 
     local ads, casual = {}, {}
-    local nowIso = isoNow()
     for _, m in ipairs(data) do
         if m.type == "ad" then
-            local cdOk = not m.cooldown_until or m.cooldown_until < nowIso
-            if cdOk then table.insert(ads, m) end
+            -- держим ВСЕ активные (cooldown учитываем при выборе в getAdMessage через LRU,
+            -- чтобы пул никогда не «кончался» и не сваливался в хардкод-фоллбэк)
+            table.insert(ads, m)
         elseif m.type == "casual" then
             table.insert(casual, m)
         end
@@ -485,23 +485,44 @@ function Tools.getAdMessage()
         end
     end
 
-    local chosenBrand, chosenPool
+    local chosenBrand, brandPool
     if math.random() < 0.90 and #rblx > 0 then
-        chosenBrand, chosenPool = "rblx", rblx
+        chosenBrand, brandPool = "rblx", rblx
     elseif #adoptme > 0 then
-        chosenBrand, chosenPool = "adoptme", adoptme
+        chosenBrand, brandPool = "adoptme", adoptme
     else
-        chosenBrand, chosenPool = "rblx", rblx
+        chosenBrand, brandPool = "rblx", rblx
     end
-    if #chosenPool == 0 then return nil end
+    if #brandPool == 0 then return nil end
 
-    local row = chosenPool[math.random(1, #chosenPool)]
-    Tools.logDebug("Ad выбран по бренду", {
-        category    = "AD",
-        brand       = chosenBrand,
-        pool_rblx   = #rblx,
-        pool_adopt  = #adoptme,
-        message_id  = row.id,
+    -- доступные = у кого cooldown истёк. Если такие есть — случайное из них.
+    -- Если ВСЕ на cooldown (пул исчерпан под нагрузкой) — случайное из всего бренд-пула:
+    -- пул НЕ кончается, реклама всегда живая и разнообразная, без хардкод-фоллбэка.
+    -- (случайное, а не строгий LRU — чтобы боты со стухшим 180с-кэшем не сходились на одном.)
+    local nowIso = isoNow()
+    local available = {}
+    for _, m in ipairs(brandPool) do
+        if not m.cooldown_until or m.cooldown_until < nowIso then
+            table.insert(available, m)
+        end
+    end
+
+    local row, mode
+    if #available > 0 then
+        row, mode = available[math.random(1, #available)], "fresh"
+    else
+        row, mode = brandPool[math.random(1, #brandPool)], "recycle"
+    end
+    if not row then return nil end
+
+    Tools.logDebug("Ad выбран", {
+        category       = "AD",
+        brand          = chosenBrand,
+        mode           = mode,
+        pool_rblx      = #rblx,
+        pool_adopt     = #adoptme,
+        avail_in_brand = #available,
+        message_id     = row.id,
     })
     return { id = row.id, message = row.text, cooldown_minutes = row.cooldown_minutes, brand = chosenBrand }
 end
