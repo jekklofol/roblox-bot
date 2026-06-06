@@ -475,7 +475,7 @@ function Tools.getAdMessage()
     local pool = Tools._adsCache or {}
     if #pool == 0 then return nil end
 
-    -- балансировка 50/50 по бренду: rblx.pw / adoptme.pw
+    -- балансировка 90/10 по бренду: rblx.pw (90%) / adoptme.pw (10%)
     local rblx, adoptme = {}, {}
     for _, m in ipairs(pool) do
         if _classifyBrand(m.text) == "adoptme" then
@@ -486,12 +486,12 @@ function Tools.getAdMessage()
     end
 
     local chosenBrand, chosenPool
-    if math.random() < 0.5 then
-        chosenBrand = (#adoptme > 0) and "adoptme" or "rblx"
-        chosenPool  = (#adoptme > 0) and adoptme   or rblx
+    if math.random() < 0.90 and #rblx > 0 then
+        chosenBrand, chosenPool = "rblx", rblx
+    elseif #adoptme > 0 then
+        chosenBrand, chosenPool = "adoptme", adoptme
     else
-        chosenBrand = (#rblx > 0) and "rblx" or "adoptme"
-        chosenPool  = (#rblx > 0) and rblx   or adoptme
+        chosenBrand, chosenPool = "rblx", rblx
     end
     if #chosenPool == 0 then return nil end
 
