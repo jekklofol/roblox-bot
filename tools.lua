@@ -1330,6 +1330,75 @@ function Tools.sendChat(msg)
     })
 end
 
+-- найти текстовый канал для SendAsync (RBXGeneral — основной публичный чат)
+function Tools._getTextChannel()
+    local ok, ch = pcall(function()
+        local TCS   = game:GetService("TextChatService")
+        local chans = TCS:WaitForChild("TextChannels", 5)
+        if not chans then return nil end
+        return chans:FindFirstChild("RBXGeneral")
+            or chans:FindFirstChildWhichIsA("TextChannel")
+    end)
+    if ok then return ch end
+    return nil
+end
+
+-- доля изменённых символов оригинал↔отфильтрованный (фильтр сохраняет длину, бьёт #/*)
+local function _censoredRatio(orig, filtered)
+    if not orig or not filtered then return 0 end
+    if #orig ~= #filtered then return 1.0 end
+    local diff = 0
+    for i = 1, #orig do
+        if orig:sub(i, i) ~= filtered:sub(i, i) then diff = diff + 1 end
+    end
+    return diff / math.max(#orig, 1)
+end
+
+-- Отправка через TextChannel:SendAsync — возвращает результат фильтрации НАПРЯМУЮ
+-- (Status + отфильтрованный Text), не зависит от TextSource/колбэков, которые в этом
+-- executor'е не отдают своё эхо. Возврат: result ("ok"/"censored"/"flood"/"blocked"/"error").
+function Tools.sendChatAsync(msg)
+    local t0 = tick()
+    local ch = Tools._getTextChannel()
+    if not ch then
+        Tools.logWarning("SendAsync: канал не найден", { category = "CHAT" })
+        return "error", nil
+    end
+    Tools.randomDelay(0.2, 0.6)
+    local ok, msgObj = pcall(function() return ch:SendAsync(msg) end)
+    if not ok or not msgObj then
+        Tools.logWarning("SendAsync упал", { category = "CHAT", error = tostring(msgObj) })
+        return "error", nil
+    end
+
+    Tools.lastSentText = msg
+    Tools.lastSentAt   = tick()
+    Tools.bumpSession("messages")
+
+    local status   = msgObj.Status
+    local filtered = msgObj.Text
+    local result
+    if status == Enum.TextChatMessageStatus.Success then
+        result = (_censoredRatio(msg, filtered) > 0) and "censored" or "ok"
+    elseif status == Enum.TextChatMessageStatus.Floodchecked then
+        result = "flood"
+    else
+        result = "blocked"
+    end
+    Tools.filterStats[result] = (Tools.filterStats[result] or 0) + 1
+
+    Tools.logInfo("Реклама отправлена (SendAsync)", {
+        category    = "CHAT",
+        message     = msg,
+        result      = result,
+        status      = tostring(status),
+        filtered    = (result == "censored") and filtered or nil,
+        stats       = Tools.filterStats,
+        duration_ms = durationMs(t0),
+    })
+    return result, filtered
+end
+
 -- ============================================================
 -- CHAT LISTENER
 -- ============================================================

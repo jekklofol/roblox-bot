@@ -1,4 +1,4 @@
-local V                     = "v3.11.0-ad-recycle"
+local V                     = "v3.12.0-ad-sendasync"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -111,18 +111,25 @@ local function runBot()
 
     Tools.randomDelay(5, 10)
 
-    -- отправка одного объявления с проверкой фильтра
+    -- отправка одного объявления через SendAsync (точный результат фильтрации)
     local function sendOneAd()
         local ad = Tools.getAdMessage()
-        if ad then
-            Tools.sendChat(ad.message)
-            local filtered = Tools.checkAndDeactivateIfFiltered(ad.id, 3, ad.message)
-            if not filtered then
-                Tools.markAdMessageUsed(ad.id, ad.cooldown_minutes or 60)
-            end
-        else
+        if not ad then
             Tools.logWarning("Нет доступной рекламы — fallback", { category = "AD" })
             Tools.sendChat("RBLX . PW - sell you pets for real money")
+            return
+        end
+        local result = Tools.sendChatAsync(ad.message)
+        if result == "error" then
+            -- SendAsync недоступен в этом executor → печатаем, реклама всё равно уходит
+            Tools.sendChat(ad.message)
+            Tools.markAdMessageUsed(ad.id, ad.cooldown_minutes or 60)
+        elseif result == "censored" then
+            -- контент триггерит фильтр → длинный cooldown, чтобы реже его доставать
+            Tools.markAdMessageUsed(ad.id, Tools.filteredCooldownMinutes)
+        else
+            -- ok / flood / blocked → обычный cooldown (контент сам по себе нормальный)
+            Tools.markAdMessageUsed(ad.id, ad.cooldown_minutes or 60)
         end
     end
 
