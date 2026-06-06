@@ -580,6 +580,27 @@ function Tools.markServerVisited(serverId, placeId, playerCount)
     })
 end
 
+-- ОХВАТ захода (пишется один раз при уходе с сервера):
+--   active_chatters (пол)  = сколько РАЗНЫХ людей реально писали при нас → точно видят чат
+--   players_present (потолок) = сколько игроков было рядом
+-- среднее ((пол+потолок)/2) считается уже в админке как «оценка охвата».
+function Tools.recordReach(serverId)
+    local chatters = 0
+    for _ in pairs(Tools.visitChatters or {}) do chatters = chatters + 1 end
+    local players = 0
+    pcall(function() players = #game:GetService("Players"):GetPlayers() end)
+    Tools.sbInsert("reach_events", {
+        bot_id          = Tools.bot_id,
+        session_id      = Tools.session_id,
+        server_id       = serverId,
+        players_present = players,
+        active_chatters = chatters,
+    })
+    Tools.logInfo("Охват зафиксирован", {
+        category = "REACH", players = players, chatters = chatters,
+    })
+end
+
 -- ============================================================
 -- LOCAL CURSOR
 -- ============================================================
@@ -1423,6 +1444,12 @@ Tools.chatMessageBuffer     = {}
 Tools.chatBufferMaxSize     = 50
 Tools.chatListenerConnected = false
 
+-- ОХВАТ: уникальные UserId игроков, которые РЕАЛЬНО писали в чат при нас за этот
+-- заход. Кто пишет — тот точно видит чат (прошёл age-check 2026, совместимая
+-- возрастная группа). Это «пол» охвата. Сбрасывается сам на новом сервере
+-- (телепорт = новый Lua VM), поэтому всегда считает только текущий заход.
+Tools.visitChatters = {}
+
 -- надёжный канал СВОЕГО эха: TextChatService.OnIncomingMessage на отправителе
 -- срабатывает дважды (Sending → финал с отфильтрованным текстом). MessageReceived
 -- свои сообщения от VirtualInputManager не отдаёт (self_in_buffer=0), отсюда фикс.
@@ -1443,6 +1470,10 @@ function Tools._pushChatMessage(text, sender, userId)
     local isSelf = false
     if userId and player and userId == player.UserId then isSelf = true end
     if not isSelf and player and sender == player.Name then isSelf = true end
+    -- чужой игрок что-то написал → он точно видит чат, засчитываем в охват
+    if not isSelf and userId and userId > 0 then
+        Tools.visitChatters[userId] = true
+    end
     table.insert(Tools.chatMessageBuffer, 1, {
         text = text, sender = sender, userId = userId or 0,
         isSelf = isSelf, at = tick(), timestamp = os.time(),

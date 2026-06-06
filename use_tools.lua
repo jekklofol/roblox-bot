@@ -1,4 +1,4 @@
-local V                     = "v3.12.1-ad-sendasync-wait"
+local V                     = "v3.13.0-reach"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -145,6 +145,7 @@ local function runBot()
     end
 
     Tools.randomDelay(2, 5)
+    pcall(function() Tools.recordReach(game.JobId) end)
     Tools.logInfo("Цикл завершён, hop", {
         category        = "BOT",
         time_on_server  = math.floor(tick() - serverStartTick),
