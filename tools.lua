@@ -669,42 +669,25 @@ function Tools.pickServerFromPool(placeId, minPlayers, maxPlayers)
     return nil
 end
 
--- relaxed-выбор: любой свежий сервер из пула напрямую через REST, исключаем текущий job.
--- fallback когда rpc_pick_server вернул nil (пул "разобран" свармом) — чтобы НЕ делать
--- слепой Teleport(placeId) без jobId (Roblox сваливает всех на один заполняющийся сервер).
-function Tools.pickAnyPoolServer(placeId)
-    local minP = Tools.minPlayersPreferred or 5
-    local maxP = Tools.maxPlayersAllowed or 100
-    local rows = Tools.sb("GET", "server_pool", {
-        select       = "server_id,player_count,max_players",
-        place_id     = "eq." .. placeId,
-        expires_at   = "gt." .. isoNow(),
-        player_count = "gte." .. minP,
-        order        = "fetched_at.desc",
-        limit        = "60",
-    })
-    if type(rows) ~= "table" or #rows == 0 then return nil end
-    local cur = game.JobId
-    local cand = {}
-    for _, r in ipairs(rows) do
-        local pc = tonumber(r.player_count) or 0
-        local mx = tonumber(r.max_players) or 0
-        if r.server_id and r.server_id ~= cur
-           and pc <= maxP and (mx - pc) >= 5 then
-            table.insert(cand, { server_id = r.server_id, player_count = pc })
-        end
-    end
-    if #cand == 0 then return nil end
-    return cand[math.random(1, #cand)]
+-- освободить захваченный (claimed) сервер при уходе — возврат в пул другим ботам сразу,
+-- не дожидаясь 10-мин stale recovery. По умолчанию освобождает текущий game.JobId
+-- (его мы захватили на прошлом hop'е как этот же bot_id).
+function Tools.releaseServer(serverId)
+    serverId = serverId or game.JobId
+    if not serverId or serverId == "" or not Tools.bot_id then return end
+    pcall(function()
+        Tools.sbRpc("rpc_release_server", {
+            p_place_id  = Tools.placeId,
+            p_server_id = serverId,
+            p_bot_id    = Tools.bot_id,
+        })
+    end)
 end
 
--- прыжок на КОНКРЕТНЫЙ свободный сервер (jobId), а не слепой матчмейкинг.
--- порядок: нормальный rpc_pick (учитывает occupied/visited) → relaxed REST-пик.
+-- прыжок на КОНКРЕТНЫЙ свободный сервер (jobId) через атомарный захват rpc_pick.
+-- Никакого relaxed/слепого пика — он давал коллизии (два бота брали один сервер).
 function Tools.teleportToConcreteServer(reason)
     local picked = Tools.pickServerFromPool(Tools.placeId)
-    if not (picked and picked.server_id) then
-        picked = Tools.pickAnyPoolServer(Tools.placeId)
-    end
     if not (picked and picked.server_id) or picked.server_id == game.JobId then
         return false
     end
@@ -717,6 +700,8 @@ function Tools.teleportToConcreteServer(reason)
         Tools.logInfo("Прыжок на конкретный свободный сервер", {
             category = "HOP", server_id = picked.server_id, reason = reason,
         })
+    else
+        Tools.releaseServer(picked.server_id)  -- телепорт не стартовал — вернём захват
     end
     return ok
 end
@@ -815,59 +800,59 @@ function Tools.fastServerHop()
         scriptQueued = true
     end
 
-    -- 2. Попытка взять из пула — нулевая нагрузка на Roblox API
-    local picked = Tools.pickServerFromPool(Tools.placeId,
-        Tools.minPlayersPreferred, Tools.maxPlayersAllowed)
-    if picked and picked.server_id then
-        Tools.logInfo("Сервер выбран из пула", {
-            category    = "HOP",
-            server_id   = picked.server_id,
-            players     = picked.player_count,
-            duration_ms = durationMs(hopStart),
-        })
-        Tools.markServerVisited(picked.server_id, Tools.placeId, picked.player_count)
-        Tools.markJobIdVisitedLocal(Tools.placeId, picked.server_id)
-        Tools.bumpSession("hops")
-        local tpOk = Tools.safeTeleport("fast-pool", function()
-            TeleportService:TeleportToPlaceInstance(Tools.placeId, picked.server_id, player)
-        end)
-        if tpOk then return true end
-        Tools.logWarning("TeleportToPlaceInstance провалился, fallback на reroll",
-            { category = "HOP", server_id = picked.server_id })
-    else
-        Tools.logDebug("Пул пуст или нет подходящих — reroll-режим",
-            { category = "HOP" })
+    -- 2. Освобождаем сервер, с которого уходим (вернём его в пул другим ботам)
+    Tools.releaseServer(game.JobId)
+
+    -- 3. Атомарный захват из пула с ретраями. Никакого слепого матчмейкинга в общем
+    --    пути — именно он сваливал рой ботов на один заполняющийся сервер.
+    local attempts = 4
+    for i = 1, attempts do
+        if not Tools.isEnabled() then return false end
+        local picked = Tools.pickServerFromPool(Tools.placeId,
+            Tools.minPlayersPreferred, Tools.maxPlayersAllowed)
+        if picked and picked.server_id and picked.server_id ~= game.JobId then
+            Tools.markServerVisited(picked.server_id, Tools.placeId, picked.player_count)
+            Tools.markJobIdVisitedLocal(Tools.placeId, picked.server_id)
+            Tools.bumpSession("hops")
+            Tools.logInfo("Сервер захвачен из пула", {
+                category    = "HOP",
+                server_id   = picked.server_id,
+                players     = picked.player_count,
+                attempt     = i,
+                duration_ms = durationMs(hopStart),
+            })
+            local tpOk = Tools.safeTeleport("fast-pool", function()
+                TeleportService:TeleportToPlaceInstance(Tools.placeId, picked.server_id, player)
+            end)
+            if tpOk then return true end
+            -- телепорт не стартовал → вернём захват и пробуем снова
+            Tools.releaseServer(picked.server_id)
+            Tools.logWarning("TeleportToPlaceInstance провалился, ретрай", {
+                category = "HOP", server_id = picked.server_id, attempt = i,
+            })
+        else
+            -- пул пуст/разобран свармом — инициируем refresh и ждём с джиттером
+            Tools.logDebug("Пул пуст, refresh+wait перед ретраем",
+                { category = "HOP", attempt = i })
+            task.spawn(function() pcall(Tools.refreshServerPool, Tools.placeId, true) end)
+            task.wait(3 + math.random() * 5)
+        end
     end
 
-    -- 3. Пул пуст по строгому rpc — пробуем конкретный свободный сервер из пула
-    --    (relaxed REST-пик), прежде чем слепо доверять матчмейкингу Roblox.
-    if Tools.teleportToConcreteServer("hop-concrete") then
-        Tools.bumpSession("hops")
-        Tools.logInfo("Hop на конкретный сервер из пула", {
-            category = "HOP", duration_ms = durationMs(hopStart),
-        })
-        return true
-    end
-
-    -- 4. Reroll: Roblox сам выбирает случайный публичный сервер
-    --    Если попадём на тот же job — стартовая проверка в use_tools мгновенно сделает повтор.
+    -- 4. Крайний резерв: пул так и не дал сервер после ретраев. Слепой reroll —
+    --    РЕДКИЙ случай (лучше слепой телепорт, чем застрять навсегда), логируем явно.
     Tools.markJobIdVisitedLocal(Tools.placeId, game.JobId)
     Tools.bumpSession("hops")
-
-    -- параллельно — если пул был пуст, инициируем refresh для следующих ботов
-    task.spawn(function() pcall(Tools.refreshServerPool, Tools.placeId, true) end)
-
-    Tools.logInfo("Reroll teleport (без jobId)", {
+    Tools.logWarning("Пул исчерпан после ретраев — крайний слепой reroll", {
         category    = "HOP",
         duration_ms = durationMs(hopStart),
     })
-    local rerollOk = Tools.safeTeleport("reroll", function()
+    local rerollOk = Tools.safeTeleport("reroll-lastresort", function()
         TeleportService:Teleport(Tools.placeId, player)
     end)
     if not rerollOk then
         Tools.logError("Reroll teleport провалился", { category = "HOP" })
-        -- крайний fallback — старый API-based hop
-        return Tools.serverHop()
+        return Tools.serverHop()   -- крайний fallback — старый API-based hop
     end
     return true
 end

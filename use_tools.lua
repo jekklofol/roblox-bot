@@ -1,4 +1,4 @@
-local V                     = "v3.9.0-filter-onincoming"
+local V                     = "v3.10.0-atomic-claim"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
