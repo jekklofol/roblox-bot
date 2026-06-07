@@ -1125,6 +1125,90 @@ end
 function Tools.getBotState() return Tools.botState end
 function Tools.isEnabled()   return Tools.enabled end
 
+-- ============================================================
+-- TELEPORT-FAIL RECOVERY (v3.15): сервер полон/недоступен → перезаход на ДРУГОЙ.
+-- TeleportToPlaceInstance — fire-and-forget; реальный отказ (GameFull и пр.)
+-- прилетает асинхронно в TeleportInitFailed. Канон Roblox: GameFull нельзя
+-- ретраить на тот же сервер — берём другой; Flooded (рейт-лимит) → ждём дольше.
+-- ============================================================
+local TP_FAIL_MAX = 5   -- макс. авто-перезаходов подряд (анти-петля); сброс на новом VM
+
+-- закрыть оставшуюся плашку телепорта ("OK"/"Закрыть"). НЕ трогаем диалог
+-- дисконнекта с Reconnect — им занимается autoReconnect (и нельзя жать Leave).
+function Tools._dismissTeleportPrompt()
+    pcall(function()
+        local cg      = game:GetService("CoreGui")
+        local prompt  = cg:FindFirstChild("RobloxPromptGui")
+        local overlay = prompt and prompt:FindFirstChild("promptOverlay")
+        if not overlay then return end
+        local err  = overlay:FindFirstChild("ErrorPrompt")
+        local area = err and err:FindFirstChild("ButtonArea", true)
+        if area and (area:FindFirstChild("ReconnectButton") or area:FindFirstChild("Reconnect")) then
+            return   -- это дисконнект, не наша плашка
+        end
+        for _, obj in pairs(overlay:GetDescendants()) do
+            if obj:IsA("TextButton") or obj:IsA("ImageButton") then
+                local t = string.lower((obj.Text or "") .. " " .. obj.Name)
+                if t:find("ok") or t:find("close") or t:find("закры") or t:find("dismiss") then
+                    local pos, sz = obj.AbsolutePosition, obj.AbsoluteSize
+                    local inset = GuiService:GetGuiInset()
+                    local cx = pos.X + sz.X / 2
+                    local cy = pos.Y + sz.Y / 2 + inset.Y
+                    pcall(function()
+                        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true,  game, 1)
+                        task.wait(0.05)
+                        VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+                    end)
+                    pcall(function() obj.MouseButton1Click:Fire() end)
+                    pcall(function() obj:Activate() end)
+                    Tools.logInfo("Закрыл плашку телепорта", { category = "HOP", btn = obj.Name })
+                    return
+                end
+            end
+        end
+    end)
+end
+
+function Tools._onTeleportFail(result)
+    if not Tools.isEnabled() then return end
+    local R = Enum.TeleportResult
+    local delay, retriable = 3, true
+    if result == R.Flooded then
+        delay = 15                                   -- рейт-лимит телепортов → ждём дольше
+    elseif result == R.GameFull or result == R.GameNotFound
+        or result == R.GameEnded or result == R.Failure then
+        delay = 2                                     -- сервер полон/недоступен → берём ДРУГОЙ
+    elseif result == R.Unauthorized then
+        retriable = false                             -- фатально, не ретраим
+    end
+
+    Tools._dismissTeleportPrompt()
+
+    if not retriable then
+        Tools.logWarning("Телепорт: фатальный отказ, без ретрая",
+            { category = "HOP", result = tostring(result) })
+        return
+    end
+
+    Tools._tpFailRetries = (Tools._tpFailRetries or 0) + 1
+    if Tools._tpFailRetries > TP_FAIL_MAX then
+        Tools.logError("Телепорт: лимит авто-перезаходов исчерпан, жду планового хопа",
+            { category = "HOP", retries = Tools._tpFailRetries })
+        return
+    end
+
+    Tools.logWarning("Сервер полон/недоступен — перезаход на другой", {
+        category = "HOP", result = tostring(result),
+        attempt = Tools._tpFailRetries, wait_s = delay,
+    })
+    task.spawn(function()
+        task.wait(delay)
+        if Tools.isEnabled() and not _G.IsHopping then
+            Tools.fastServerHop()   -- атомарный захват ДРУГОГО сервера (только что посещённый rpc исключит)
+        end
+    end)
+end
+
 function Tools.setup(opts)
     opts = opts or {}
     if opts.minPlayersPreferred then Tools.minPlayersPreferred = opts.minPlayersPreferred end
@@ -1135,8 +1219,10 @@ function Tools.setup(opts)
     if opts.placeId             then Tools.placeId             = opts.placeId             end
     if opts.scriptUrl           then Tools.scriptUrl           = opts.scriptUrl           end
     Tools._startTick = tick()   -- момент захода на сервер, отсчёт dwell
+    Tools._tpFailRetries = 0    -- новый сервер = новый VM, сбрасываем счётчик авто-перезаходов
 
-    -- если телепорт провалился асинхронно — снимаем guard, иначе бот зависнет в IsHopping
+    -- если телепорт провалился асинхронно — снимаем guard (иначе зависание в IsHopping)
+    -- и, если сервер полон/недоступен, перезаходим на ДРУГОЙ (см. Tools._onTeleportFail).
     if not Tools._tpFailHooked then
         Tools._tpFailHooked = true
         pcall(function()
@@ -1146,6 +1232,7 @@ function Tools.setup(opts)
                     Tools.logWarning("TeleportInitFailed — сбрасываю IsHopping", {
                         category = "HOP", result = tostring(result), msg = tostring(msg),
                     })
+                    Tools._onTeleportFail(result)
                 end
             end)
         end)

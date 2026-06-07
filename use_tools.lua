@@ -1,4 +1,4 @@
-local V                     = "v3.13.0-reach"
+local V                     = "v3.15.0-tpretry"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
