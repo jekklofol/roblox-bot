@@ -244,6 +244,8 @@ function Tools.initBot(version, extra)
     local executor  = detectExecutor()
     Tools.version   = version
     Tools.executor  = executor
+    Tools._serverLoadTick = tick()   -- момент загрузки скрипта на этом сервере (для детекта «застрял»)
+    Tools._stuckLogged    = false
 
     Tools._startLogFlushLoop()
 
@@ -292,6 +294,32 @@ function Tools.initBot(version, extra)
     return Tools.bot_id
 end
 
+-- АНТИ-AFK: Roblox шлёт Player.Idled после ~20 мин без «настоящего» ввода и затем
+-- кикает за неактивность. Эмулируем ввод (стандартный приём VirtualUser), чтобы кик
+-- не наступал. Здоровый бот и так прыгает (<420с = новый VM), но это страхует
+-- застрявших, пока их разруливает watchdog-цикл / честный пульс.
+function Tools.startAntiAfk()
+    if Tools._antiAfkHooked then return end
+    Tools._antiAfkHooked = true
+    pcall(function()
+        local VirtualUser = game:GetService("VirtualUser")
+        player.Idled:Connect(function()
+            pcall(function()
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new())
+            end)
+            Tools.logWarning("Anti-AFK: Player.Idled — эмулирую ввод", { category = "BOT" })
+        end)
+    end)
+end
+
+-- ЧЕСТНЫЙ ПУЛЬС: дольше этого на одном сервере (один VM, без перезагрузки скрипта) =
+-- бот застрял (hard-cap 360с + fallback 420с должны были его увести). 600с с запасом
+-- выше нормы (dwell ≤260с). Тогда heartbeat ОСТАНАВЛИВАЕТСЯ → last_seen стареет →
+-- внешний мозг (watchdog.ps1 / termux: last_seen>180с = мёртв) перезапускает аккаунт.
+-- Без этого зомби слал бы пульс вечно и выглядел «живым» → авто-подъём не реагировал.
+Tools.stuckHeartbeatSec = Tools.stuckHeartbeatSec or 600
+
 function Tools.startHeartbeat(intervalSec)
     intervalSec = intervalSec or 60
     if Tools._heartbeatRunning then return end
@@ -299,6 +327,21 @@ function Tools.startHeartbeat(intervalSec)
     task.spawn(function()
         while Tools.enabled and Tools._heartbeatRunning do
             task.wait(intervalSec)
+            -- застрял на одном сервере дольше нормы → перестаём врать пульсом
+            local loadTick = Tools._serverLoadTick
+            if loadTick and (tick() - loadTick) > Tools.stuckHeartbeatSec then
+                if not Tools._stuckLogged then
+                    Tools._stuckLogged = true
+                    Tools.logCritical("Застрял на сервере >" .. Tools.stuckHeartbeatSec
+                        .. "с — глушу heartbeat, отдаю внешнему авто-подъёму", {
+                        category = "WATCHDOG",
+                        stuck_sec = math.floor(tick() - loadTick),
+                    })
+                    pcall(Tools._flushLogs)
+                end
+                Tools._heartbeatRunning = false
+                break   -- last_seen перестанет обновляться → termux/watchdog перезапустит
+            end
             if Tools.bot_id then
                 local t0 = tick()
                 local ok = Tools.sb("PATCH", "bots", { id = "eq." .. Tools.bot_id }, {

@@ -1,4 +1,4 @@
-local V                     = "v3.15.0-tpretry"
+local V                     = "v3.16.0-antiafk"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -58,6 +58,7 @@ local speedOverride = tonumber(Tools.getRemoteConfigValue("chat_speed_multiplier
 if speedOverride and speedOverride > 0 then Tools.chatSpeedMul = speedOverride end
 
 Tools.autoReconnect()
+Tools.startAntiAfk()
 
 -- ============================================================
 -- Main flow
@@ -155,41 +156,42 @@ local function runBot()
 end
 
 -- ============================================================
--- Hard cap: безусловный hop после MAX_SERVER_TIME_SEC секунд
--- никакая ошибка/зависание не оставит бота на сервере дольше
+-- Watchdog-ЦИКЛ: после MAX_SERVER_TIME_SEC безусловно уводим с сервера и,
+-- если уход не удался (полный сервер / зависший IsHopping), ПОВТОРЯЕМ каждые ~45с,
+-- пока бот реально не сменит сервер (успешный TP уничтожит этот VM и оборвёт цикл).
+-- Раньше было 2 разовые попытки (360с и 420с): если обе фейлились — бот застревал
+-- навсегда (→ AFK-кик через 20 мин → зомби). Цикл это закрывает.
 -- ============================================================
 task.spawn(function()
     task.wait(MAX_SERVER_TIME_SEC)
-    Tools.logWarning("Hard cap: " .. MAX_SERVER_TIME_SEC .. "с истекли, форс-hop", {
-        category       = "WATCHDOG",
-        time_on_server = math.floor(tick() - serverStartTick),
-    })
-    pcall(Tools.endSession)
-    -- ставим скрипт на следующий сервер если ещё не поставлен
+    -- ставим скрипт на следующий сервер (один раз)
     pcall(function()
         if queueonteleport then
             queueonteleport('loadstring(game:HttpGet("'
                 .. SCRIPT_URL .. '?t=' .. tick() .. '"))()')
         end
     end)
-    -- единый шлюз: если hop уже идёт — не дёргаем телепорт повторно
-    Tools.safeTeleport("hardcap-watchdog", function()
-        game:GetService("TeleportService"):Teleport(PLACE_ID, player)
-    end)
-end)
-
--- ============================================================
--- Fallback watchdog: если даже hard cap не сработал — через 60с ещё попытка
--- ============================================================
-task.spawn(function()
-    task.wait(MAX_SERVER_TIME_SEC + 60)
-    Tools.logCritical("Fallback watchdog: ещё одна попытка телепорта", { category = "WATCHDOG" })
-    pcall(Tools._flushLogs)
-    -- последний резерв: если предыдущий телепорт завис в IsHopping, форсируем
-    _G.IsHopping = false
-    Tools.safeTeleport("fallback-watchdog", function()
-        game:GetService("TeleportService"):Teleport(PLACE_ID, player)
-    end, true)
+    local tries = 0
+    while true do
+        if not Tools.isEnabled() then return end   -- бот остановлен командой — не дёргаем
+        tries = tries + 1
+        Tools.logWarning("Watchdog: форс-увод с сервера (попытка " .. tries .. ")", {
+            category       = "WATCHDOG",
+            time_on_server = math.floor(tick() - serverStartTick),
+        })
+        pcall(Tools.endSession)
+        pcall(Tools._flushLogs)
+        _G.IsHopping = false   -- сбрасываем возможный зависший guard
+        -- сначала на КОНКРЕТНЫЙ свободный сервер (без коллизий), иначе слепо
+        pcall(function()
+            if not Tools.teleportToConcreteServer("watchdog-loop") then
+                Tools.safeTeleport("watchdog-loop-blind", function()
+                    game:GetService("TeleportService"):Teleport(PLACE_ID, player)
+                end, true)
+            end
+        end)
+        task.wait(45)   -- успешный TP убьёт VM раньше; раз мы ещё тут — TP не прошёл, повторяем
+    end
 end)
 
 -- ============================================================
