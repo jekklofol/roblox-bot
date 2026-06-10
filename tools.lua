@@ -1176,6 +1176,13 @@ function Tools.isEnabled()   return Tools.enabled end
 -- ============================================================
 local TP_FAIL_MAX = 5   -- макс. авто-перезаходов подряд (анти-петля); сброс на новом VM
 
+-- Анти-IsTeleporting (v3.17): Roblox держит "teleport in processing" несколько секунд.
+-- Если выстрелить новый телепорт слишком рано — ловим IsTeleporting и попадаем в
+-- вечный дедлок (watchdog/recovery спамят, зависший TP не разрешается). Поэтому НЕ
+-- стартуем телепорты чаще раза в tpMinGap секунд (единый троттлинг в safeTeleport).
+Tools.tpMinGap     = 30
+Tools._lastTpFireAt = 0
+
 -- закрыть оставшуюся плашку телепорта ("OK"/"Закрыть"). НЕ трогаем диалог
 -- дисконнекта с Reconnect — им занимается autoReconnect (и нельзя жать Leave).
 function Tools._dismissTeleportPrompt()
@@ -1215,6 +1222,18 @@ end
 function Tools._onTeleportFail(result)
     if not Tools.isEnabled() then return end
     local R = Enum.TeleportResult
+
+    -- IsTeleporting = предыдущий телепорт ещё обрабатывается Roblox. НЕ стреляем
+    -- новым (иначе "previous teleport is in processing" по кругу). Ждём, пока тот
+    -- сам разрешится: успех убьёт VM, реальный отказ прилетит сюда же. Троттлинг
+    -- в safeTeleport не даст спама; зависший TP получит шанс завершиться.
+    if result == R.IsTeleporting then
+        Tools.logWarning("Телепорт уже в процессе — жду разрешения, без ретрая", {
+            category = "HOP", result = tostring(result),
+        })
+        return
+    end
+
     local delay, retriable = 3, true
     if result == R.Flooded then
         delay = 15                                   -- рейт-лимит телепортов → ждём дольше
@@ -1294,6 +1313,15 @@ function Tools.safeTeleport(reason, teleportFn, immediate)
         Tools.logDebug("safeTeleport: hop уже идёт, пропуск", { category = "HOP", reason = reason })
         return false
     end
+    -- анти-IsTeleporting: не стартуем телепорт, пока с прошлого старта не прошло
+    -- tpMinGap (Roblox держит "teleport in processing"). Спасает от вечного дедлока.
+    local sinceLastTp = tick() - (Tools._lastTpFireAt or 0)
+    if sinceLastTp < (Tools.tpMinGap or 30) then
+        Tools.logDebug("safeTeleport: рано после прошлого TP, пропуск", {
+            category = "HOP", reason = reason, since_s = math.floor(sinceLastTp),
+        })
+        return false
+    end
     _G.IsHopping = true
 
     local elapsed = tick() - (Tools._startTick or tick())
@@ -1306,6 +1334,7 @@ function Tools.safeTeleport(reason, teleportFn, immediate)
     end
 
     pcall(Tools._flushLogs)
+    Tools._lastTpFireAt = tick()   -- момент старта телепорта (для троттлинга выше)
     local ok, err = pcall(teleportFn)
     if not ok then
         _G.IsHopping = false   -- телепорт не стартовал — разрешаем следующую попытку

@@ -1,4 +1,4 @@
-local V                     = "v3.16.0-antiafk"
+local V                     = "v3.17.0-tp-serialize"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -190,7 +190,8 @@ task.spawn(function()
                 end, true)
             end
         end)
-        task.wait(45)   -- успешный TP убьёт VM раньше; раз мы ещё тут — TP не прошёл, повторяем
+        task.wait(60)   -- успешный TP убьёт VM раньше; раз мы ещё тут — TP не прошёл, повторяем
+        -- (60с > tpMinGap: даём зависшему телепорту разрешиться, не спамим поверх)
     end
 end)
 
