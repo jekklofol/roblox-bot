@@ -1555,19 +1555,12 @@ function Tools.sendChatAsync(msg)
     Tools.lastSentAt   = tick()
     Tools.bumpSession("messages")
 
-    -- SendAsync в Delta отдаёт объект ещё «в полёте» (Status = Sending); финальный
-    -- статус (Success/Floodchecked/ошибка фильтра) и отфильтрованный .Text приходят
-    -- асинхронно на ТОТ ЖЕ объект. Поэтому ждём, пока статус перестанет быть Sending,
-    -- и только потом классифицируем. Без этого 100% реклам ложно считались "blocked".
-    local status = msgObj.Status
-    if status == Enum.TextChatMessageStatus.Sending then
-        local deadline = tick() + 3
-        repeat
-            task.wait(0.15)
-            status = msgObj.Status
-        until status ~= Enum.TextChatMessageStatus.Sending or tick() > deadline
-    end
-
+    -- Delta НЕ возвращает финальный статус своего сообщения: эхо своего текста в
+    -- executor-контекст не приходит ничем (см. §4/§7), статус навсегда остаётся
+    -- "Sending". Поэтому НЕ ждём его (раньше ждали 3с впустую на КАЖДОЙ рекламе с
+    -- нулевой пользой). Реклама уходит независимо от статуса — классифицируем сразу
+    -- по тому, что прилетело синхронно.
+    local status   = msgObj.Status
     local filtered = msgObj.Text
     local result
     if status == Enum.TextChatMessageStatus.Success then
@@ -1575,12 +1568,9 @@ function Tools.sendChatAsync(msg)
     elseif status == Enum.TextChatMessageStatus.Floodchecked then
         result = "flood"
     elseif status == Enum.TextChatMessageStatus.Sending then
-        -- статус так и не разрешился за таймаут — НЕ знаем, прошло или нет.
-        -- считаем отдельной категорией, а не "blocked" (иначе статистика снова врёт).
-        result = "pending"
+        result = "sent"      -- норма в Delta: реклама отправлена, квитанция недоступна
     else
-        -- терминальные ошибки: TextFilterFailed / InvalidPrivacySettings / прочее
-        result = "blocked"
+        result = "blocked"   -- терминальная ошибка вернулась синхронно
     end
     Tools.filterStats[result] = (Tools.filterStats[result] or 0) + 1
 
@@ -1617,7 +1607,7 @@ Tools._selfEchoMax     = 20
 Tools._onIncomingHooked = false
 
 -- статистика фильтрации за сессию (видно в логах: сколько ушло в блок/прошло)
-Tools.filterStats = { ok = 0, censored = 0, flood = 0, blocked = 0, pending = 0, no_echo = 0 }
+Tools.filterStats = { ok = 0, censored = 0, flood = 0, blocked = 0, sent = 0, no_echo = 0 }
 
 -- единая точка приёма сообщения в буфер.
 -- at = tick() (монотонный, для точного окна "после отправки"),

@@ -1,4 +1,4 @@
-local V                     = "v3.17.0-tp-serialize"
+local V                     = "v3.18.0-fast-send"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
