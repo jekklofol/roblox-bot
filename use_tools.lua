@@ -1,4 +1,4 @@
-local V                     = "v3.18.0-fast-send"
+local V                     = "v3.19.0-wider-reach"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -6,8 +6,8 @@ local SEARCH_TIMEOUT        = 60
 local TELEPORT_COOLDOWN     = 15
 local MAX_SERVER_TIME_SEC   = 360   -- жёсткий cap на время на одном сервере
 local MIN_PLAYERS_FOR_AD    = 3     -- если меньше — реклама бесполезна, сразу hop
-local TARGET_DWELL_MIN      = 150   -- минимально сидим на сервере (реже телепорты = меньше крашей/детекта)
-local TARGET_DWELL_MAX      = 260   -- максимально (до hard cap)
+local TARGET_DWELL_MIN      = 90    -- сидим меньше → чаще меняем сервер → шире охват (новые
+local TARGET_DWELL_MAX      = 150   -- аудитории вместо повтора одним людям). ~2-3 рекламы/заход.
 local AD_GAP_MIN            = 45    -- интервал между рекламами в рамках одного захода
 local AD_GAP_MAX            = 80
 local SCRIPT_URL            = "https://raw.githubusercontent.com/jekklofol/roblox-bot/refs/heads/main/use_tools.lua"
@@ -96,8 +96,9 @@ local function runBot()
         Tools.logWarning("PlayButton не появился — пропускаю шаг", { category = "BOT" })
     end
 
-    -- Adoption Island не на каждом сервере — короткий таймаут, шаг некритичный
-    if Tools.waitForAdoptionIslandButton(6) then
+    -- Adoption Island есть НЕ на каждом сервере и появляется сразу — 2с хватает.
+    -- Раньше ждали 6с впустую почти на каждом заходе (диалога обычно нет).
+    if Tools.waitForAdoptionIslandButton(2) then
         Tools.randomDelay(1, 3)
         local ok = Tools.clickAdoptionIslandButton()
         if not ok then
