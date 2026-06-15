@@ -1,4 +1,4 @@
-local V                     = "v3.19.0-wider-reach"
+local V                     = "v3.20.0-termux-heartbeat"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -39,6 +39,14 @@ Tools.setup({
 -- ============================================================
 Tools.initBot(V)
 Tools.startSession()
+
+-- ВНЕШНИЙ heartbeat: пишем имя аккаунта в файл рядом с adbot_alive.txt, чтобы
+-- Termux-watchdog (monitor.sh) знал, ЧЕЙ last_seen обновлять в Supabase через curl.
+-- Надёжнее in-game httprequest (он в Delta отмирает / ловится прокси) → админка
+-- видит ту же правду, что и watchdog. См. REKLAMSHIKI_MEMORY §1/§8.
+pcall(function()
+    if writefile then writefile("adbot_id.txt", player.Name) end
+end)
 
 -- расширенная проверка: после initBot спрашиваем у Supabase, не сидит ли другой бот тут
 if Tools.checkServerSharedWithOtherBot(SCRIPT_URL) then
