@@ -1,4 +1,4 @@
-local V                     = "v3.20.0-termux-heartbeat"
+local V                     = "v3.21.0-filter-obs"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100

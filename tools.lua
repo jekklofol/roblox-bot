@@ -1623,6 +1623,23 @@ function Tools._pushChatMessage(text, sender, userId)
     if not isSelf and userId and userId > 0 then
         Tools.visitChatters[userId] = true
     end
+    -- ДИАГНОСТИКА цензуры (v3.21): своё эхо в Delta не видно, но ЧУЖИЕ сообщения видны.
+    -- Логируем чужие сообщения, похожие на рекламу сайта или зацензуренные (###) —
+    -- покажет, режет ли фильтр ссылки в чат вообще (для всех), или пропускает.
+    if not isSelf and text ~= "" then
+        local low = string.lower(text)
+        if string.find(text, "###", 1, true)
+           or string.find(low, "rblx", 1, true) or string.find(low, "adoptme", 1, true)
+           or string.find(low, " dot ", 1, true) or string.find(low, "http", 1, true)
+           or string.find(low, "discord", 1, true) or string.find(low, ".pw", 1, true)
+           or string.find(low, " pw", 1, true) or string.find(low, ".gg", 1, true) then
+            pcall(function()
+                Tools.logInfo("Чужое сообщение (диагностика фильтра)", {
+                    category = "FILTER_OBS", text = text, sender = tostring(sender),
+                })
+            end)
+        end
+    end
     table.insert(Tools.chatMessageBuffer, 1, {
         text = text, sender = sender, userId = userId or 0,
         isSelf = isSelf, at = tick(), timestamp = os.time(),
