@@ -645,6 +645,111 @@ function Tools.recordReach(serverId)
 end
 
 -- ============================================================
+-- SELF-TEST shadow-mute (детект «нас не слышно»): пара ботов на одном сервере.
+-- Конфиг в bot_config (per-bot key='selftest', value JSON {role, marker, secs, jobid}).
+-- role=send: бот публикует свой jobid (глоб. key='selftest_anchor') и шлёт метку.
+-- role=watch: читает anchor jobid, телепортится туда, слушает, считает, видна ли метка.
+-- Метка вида "zq9 rblx dot pw zq9": токен zq9 фильтр не трогает → видно «дошло ли»;
+-- средняя часть покажет, режется ли адрес. Оба обходят анти-коллизию (ранний return).
+-- ============================================================
+function Tools.runSelftest(cfgStr)
+    local ok, cfg = pcall(function() return HttpService:JSONDecode(cfgStr) end)
+    if not ok or type(cfg) ~= "table" then return end
+    local secs   = tonumber(cfg.secs) or 150
+    local marker = cfg.marker or "zq9 rblx dot pw zq9"
+    Tools.logInfo("SELFTEST старт", { category = "SELFTEST", role = tostring(cfg.role), secs = secs })
+    pcall(Tools._flushLogs)
+
+    -- зайти в игру (иначе чат не работает)
+    task.wait(3)
+    if Tools.waitForPlayButton(20) then Tools.randomDelay(1, 2); pcall(Tools.clickPlayButton) end
+    if Tools.waitForAdoptionIslandButton(2) then pcall(Tools.clickAdoptionIslandButton) end
+    task.wait(5)
+
+    local function clearMyCfg()
+        pcall(function() Tools.sb("DELETE", "bot_config",
+            { bot_id = "eq." .. tostring(Tools.bot_id), key = "eq.selftest" }) end)
+    end
+
+    if cfg.role == "send" then
+        -- публикуем точку встречи (свой текущий jobId)
+        pcall(function() Tools.sb("DELETE", "bot_config", { key = "eq.selftest_anchor" }) end)
+        pcall(function() Tools.sbInsert("bot_config", { key = "selftest_anchor", value = game.JobId }) end)
+        Tools.logCritical("SELFTEST anchor опубликован", { category = "SELFTEST", jobid = game.JobId })
+        pcall(Tools._flushLogs)
+        local t0 = tick()
+        while tick() - t0 < secs do
+            pcall(function() Tools.sendChatAsync(marker) end)
+            Tools.logInfo("SELFTEST метка отправлена", { category = "SELFTEST", marker = marker })
+            task.wait(7)
+        end
+
+    elseif cfg.role == "watch" then
+        local anchor = cfg.jobid
+        if not anchor or anchor == "" then
+            local t0 = tick()
+            while tick() - t0 < 120 and (not anchor or anchor == "") do
+                local rows = Tools.sb("GET", "bot_config",
+                    { key = "eq.selftest_anchor", select = "value", limit = "1" })
+                if rows and rows[1] and rows[1].value and rows[1].value ~= "" then
+                    anchor = rows[1].value
+                else
+                    task.wait(5)
+                end
+            end
+        end
+        if anchor and anchor ~= "" and game.JobId ~= anchor then
+            -- сохраняем anchor в свой конфиг и телепортимся; после ТП новый VM продолжит watch тут
+            pcall(function()
+                Tools.sb("DELETE", "bot_config", { bot_id = "eq." .. tostring(Tools.bot_id), key = "eq.selftest" })
+                Tools.sbInsert("bot_config", { bot_id = Tools.bot_id, key = "selftest",
+                    value = HttpService:JSONEncode({ role = "watch", jobid = anchor, marker = marker, secs = secs }) })
+            end)
+            Tools.logCritical("SELFTEST watch → телепорт к anchor", { category = "SELFTEST", anchor = anchor })
+            pcall(Tools._flushLogs)
+            pcall(function() TeleportService:TeleportToPlaceInstance(Tools.placeId, anchor, player) end)
+            task.wait(30)   -- если ТП не сработал — упадём ниже к очистке
+            return
+        end
+        -- мы на anchor-сервере → слушаем чат
+        local seen = {}
+        local conn
+        pcall(function()
+            conn = game:GetService("TextChatService").MessageReceived:Connect(function(m)
+                seen[#seen + 1] = tostring(m.Text or "")
+            end)
+        end)
+        Tools.logCritical("SELFTEST watch слушает на anchor", { category = "SELFTEST", jobid = game.JobId })
+        local t0 = tick()
+        while tick() - t0 < secs do task.wait(3) end
+        pcall(function() if conn then conn:Disconnect() end end)
+        local tokenHits, hashHits = 0, 0
+        local samples = {}
+        for _, txt in ipairs(seen) do
+            if string.find(txt, "zq9", 1, true) then tokenHits = tokenHits + 1; samples[#samples+1] = txt end
+            if string.find(txt, "###", 1, true) then hashHits = hashHits + 1 end
+        end
+        Tools.logCritical("SELFTEST РЕЗУЛЬТАТ", {
+            category    = "SELFTEST",
+            total_seen  = #seen,
+            token_hits  = tokenHits,   -- >0 = метку видно (НЕ shadow-mute)
+            hash_msgs   = hashHits,
+            verdict     = (tokenHits == 0) and "NOT_SEEN(shadow-mute?)"
+                          or "SEEN",
+            samples     = table.concat(samples, " | "):sub(1, 500),
+        })
+        pcall(Tools._flushLogs)
+    end
+
+    -- очистка конфигов и возврат в норму
+    clearMyCfg()
+    pcall(function() Tools.sb("DELETE", "bot_config", { key = "eq.selftest_anchor" }) end)
+    pcall(Tools._flushLogs)
+    task.wait(2)
+    pcall(Tools.fastServerHop)
+end
+
+-- ============================================================
 -- LOCAL CURSOR
 -- ============================================================
 function Tools.getSavedCursor(placeId)

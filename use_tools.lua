@@ -1,4 +1,4 @@
-local V                     = "v3.21.0-filter-obs"
+local V                     = "v3.22.0-selftest"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -48,13 +48,23 @@ pcall(function()
     if writefile then writefile("adbot_id.txt", player.Name) end
 end)
 
+Tools.startHeartbeat(45)
+Tools.startCommandLoop(5)
+
+-- СЕЛФ-ТЕСТ shadow-mute (по конфигу): ДО анти-коллизии, чтобы пара ботов могла
+-- ужиться на одном сервере. Если конфиг 'selftest' задан — бот уходит в тест и
+-- не выполняет обычный цикл. См. Tools.runSelftest.
+local selftest = Tools.getRemoteConfigValue("selftest")
+if selftest and selftest ~= "" then
+    Tools.runSelftest(selftest)
+    return
+end
+
 -- расширенная проверка: после initBot спрашиваем у Supabase, не сидит ли другой бот тут
 if Tools.checkServerSharedWithOtherBot(SCRIPT_URL) then
     return
 end
 
-Tools.startHeartbeat(45)
-Tools.startCommandLoop(5)
 Tools.startPoolRefresher(PLACE_ID, 90)
 
 pcall(Tools.logSystemSnapshot, "boot")
