@@ -1,4 +1,4 @@
-local V                     = "v3.23.0-mutecheck-lightlogs"
+local V                     = "v3.24.0-mutecheck-hardened"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100

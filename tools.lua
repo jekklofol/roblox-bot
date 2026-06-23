@@ -820,18 +820,26 @@ function Tools.runMuteCheck(cfgStr)
             if rows and rows[1] and rows[1].value and rows[1].value ~= "" then anchor = rows[1].value
             else task.wait(5) end
         end
-        if anchor and game.JobId ~= anchor then
+        -- если якорь так и не появился — НЕ шлём со своего сервера (иначе ложный «бан»).
+        if not anchor then
+            Tools.logCritical("MUTECHECK probe: anchor не найден за 120с — отмена (не помечаю)",
+                { category = "MUTECHECK" })
+            clearMine(); pcall(Tools._flushLogs); task.wait(2); pcall(Tools.fastServerHop)
+            return
+        end
+        if game.JobId ~= anchor then
             pcall(function() TeleportService:TeleportToPlaceInstance(Tools.placeId, anchor, player) end)
             task.wait(30)
             return  -- после ТП новый VM перечитает конфиг и продолжит probe тут
         end
-        -- на anchor-сервере: помечаем себя «в бане по умолчанию», шлём метку
+        -- ПОДТВЕРЖДЕНО на сервере судьи (game.JobId == anchor): помечаем «в бане по
+        -- умолчанию» и шлём метку. Если судья её услышит — снимет флаг (chat_muted=false).
         pcall(function()
             Tools.sb("PATCH", "bots", { id = "eq." .. tostring(Tools.bot_id) },
                 { chat_muted = true, mute_checked_at = isoNow() }, { ["Prefer"] = "return=minimal" })
         end)
         local marker = "mc-" .. tostring(player.Name)
-        Tools.logCritical("MUTECHECK probe шлёт метку", { category = "MUTECHECK", marker = marker })
+        Tools.logCritical("MUTECHECK probe шлёт метку", { category = "MUTECHECK", marker = marker, jobid = game.JobId })
         for _ = 1, 6 do
             pcall(function() Tools.sendChatAsync(marker) end)
             task.wait(6)
