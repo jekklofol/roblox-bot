@@ -1,4 +1,4 @@
-local V                     = "v3.22.0-selftest"
+local V                     = "v3.23.0-mutecheck-lightlogs"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -59,6 +59,17 @@ if selftest and selftest ~= "" then
     Tools.runSelftest(selftest)
     return
 end
+
+-- МАССОВАЯ ПРОВЕРКА МЬЮТА (по конфигу): тоже ДО анти-коллизии. См. Tools.runMuteCheck.
+local mutecheck = Tools.getRemoteConfigValue("mutecheck")
+if mutecheck and mutecheck ~= "" then
+    Tools.runMuteCheck(mutecheck)
+    return
+end
+
+-- уровень логирования в базу (по умолчанию INFO — DEBUG-шум не пишем; см. tools.lua)
+local logLvl = Tools.getRemoteConfigValue("min_log_level")
+if logLvl and logLvl ~= "" then Tools.minLogLevel = logLvl end
 
 -- расширенная проверка: после initBot спрашиваем у Supabase, не сидит ли другой бот тут
 if Tools.checkServerSharedWithOtherBot(SCRIPT_URL) then

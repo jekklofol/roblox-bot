@@ -206,8 +206,17 @@ function Tools._startLogFlushLoop()
     end)
 end
 
+-- Порог логирования в базу (v3.23): DEBUG-шум (Heartbeat, «Пул свежий», «Ad выбран»
+-- и т.п.) НЕ пишем — чтобы не нагружать Supabase и не раздувать logs. Важное
+-- (INFO+: реклама, хопы, реконнекты, ошибки) пишется. Меняется через remote config
+-- 'min_log_level' (можно временно опустить до DEBUG для отладки) или Tools.minLogLevel.
+Tools.minLogLevel = Tools.minLogLevel or "INFO"
+local LOG_RANK = { DEBUG = 1, INFO = 2, WARNING = 3, ERROR = 4, CRITICAL = 5 }
+
 function Tools.sendLog(level, message, context)
-    -- enqueue, не блокируем вызывающий поток
+    local rank    = LOG_RANK[level or "INFO"] or 2
+    local minRank = LOG_RANK[Tools.minLogLevel] or 2
+    if rank < minRank then return end   -- ниже порога — в базу не пишем
     Tools._enqueueLog(buildLogRow(level, message, context))
 end
 
@@ -744,6 +753,93 @@ function Tools.runSelftest(cfgStr)
     -- очистка конфигов и возврат в норму
     clearMyCfg()
     pcall(function() Tools.sb("DELETE", "bot_config", { key = "eq.selftest_anchor" }) end)
+    pcall(Tools._flushLogs)
+    task.wait(2)
+    pcall(Tools.fastServerHop)
+end
+
+-- ============================================================
+-- MASS MUTE-CHECK (v3.23): массово проверяем, кто из ботов в shadow-mute.
+-- Конфиг bot_config per-bot key='mutecheck' value JSON {role:'judge'|'probe', secs}.
+--   judge: садится на сервер, публикует jobid (key='mutecheck_anchor'), слушает чат,
+--          и на каждое услышанное "mc-<username>" ставит этому боту chat_muted=false.
+--   probe: читает anchor, телепортится туда, помечает СЕБЯ chat_muted=true (по умолчанию
+--          в бане), шлёт "mc-<своёимя>" несколько раз. Если judge услышал — переключит на false.
+-- Итог: услышанные = не в бане; неуслышанные = в бане. Оба обходят анти-коллизию.
+-- ============================================================
+function Tools.runMuteCheck(cfgStr)
+    local ok, cfg = pcall(function() return HttpService:JSONDecode(cfgStr) end)
+    if not ok or type(cfg) ~= "table" then return end
+    local secs = tonumber(cfg.secs) or 150
+    Tools.logCritical("MUTECHECK старт", { category = "MUTECHECK", role = tostring(cfg.role), secs = secs })
+    pcall(Tools._flushLogs)
+
+    task.wait(3)
+    if Tools.waitForPlayButton(20) then Tools.randomDelay(1, 2); pcall(Tools.clickPlayButton) end
+    if Tools.waitForAdoptionIslandButton(2) then pcall(Tools.clickAdoptionIslandButton) end
+    task.wait(5)
+
+    local function clearMine()
+        pcall(function() Tools.sb("DELETE", "bot_config",
+            { bot_id = "eq." .. tostring(Tools.bot_id), key = "eq.mutecheck" }) end)
+    end
+
+    if cfg.role == "judge" then
+        pcall(function() Tools.sb("DELETE", "bot_config", { key = "eq.mutecheck_anchor" }) end)
+        pcall(function() Tools.sbInsert("bot_config", { key = "mutecheck_anchor", value = game.JobId }) end)
+        Tools.logCritical("MUTECHECK судья готов (anchor)", { category = "MUTECHECK", jobid = game.JobId })
+        pcall(Tools._flushLogs)
+        local heard = {}
+        local conn
+        pcall(function()
+            conn = game:GetService("TextChatService").MessageReceived:Connect(function(m)
+                local txt = tostring(m.Text or "")
+                local name = string.match(txt, "mc%-([%w_]+)")
+                if name and not heard[name] then
+                    heard[name] = true
+                    -- услышали этого бота → он НЕ в бане
+                    pcall(function()
+                        Tools.sb("PATCH", "bots", { username = "eq." .. name },
+                            { chat_muted = false, mute_checked_at = isoNow() }, { ["Prefer"] = "return=minimal" })
+                    end)
+                    Tools.logInfo("MUTECHECK услышан (не в бане)", { category = "MUTECHECK", name = name })
+                end
+            end)
+        end)
+        local t0 = tick()
+        while tick() - t0 < secs do task.wait(3) end
+        pcall(function() if conn then conn:Disconnect() end end)
+        Tools.logCritical("MUTECHECK судья закончил", { category = "MUTECHECK", heard_count = (function() local n=0 for _ in pairs(heard) do n=n+1 end return n end)() })
+
+    elseif cfg.role == "probe" then
+        -- найти anchor
+        local anchor
+        local t0 = tick()
+        while tick() - t0 < 120 and not anchor do
+            local rows = Tools.sb("GET", "bot_config", { key = "eq.mutecheck_anchor", select = "value", limit = "1" })
+            if rows and rows[1] and rows[1].value and rows[1].value ~= "" then anchor = rows[1].value
+            else task.wait(5) end
+        end
+        if anchor and game.JobId ~= anchor then
+            pcall(function() TeleportService:TeleportToPlaceInstance(Tools.placeId, anchor, player) end)
+            task.wait(30)
+            return  -- после ТП новый VM перечитает конфиг и продолжит probe тут
+        end
+        -- на anchor-сервере: помечаем себя «в бане по умолчанию», шлём метку
+        pcall(function()
+            Tools.sb("PATCH", "bots", { id = "eq." .. tostring(Tools.bot_id) },
+                { chat_muted = true, mute_checked_at = isoNow() }, { ["Prefer"] = "return=minimal" })
+        end)
+        local marker = "mc-" .. tostring(player.Name)
+        Tools.logCritical("MUTECHECK probe шлёт метку", { category = "MUTECHECK", marker = marker })
+        for _ = 1, 6 do
+            pcall(function() Tools.sendChatAsync(marker) end)
+            task.wait(6)
+        end
+    end
+
+    clearMine()
+    pcall(function() if cfg.role == "judge" then Tools.sb("DELETE", "bot_config", { key = "eq.mutecheck_anchor" }) end end)
     pcall(Tools._flushLogs)
     task.wait(2)
     pcall(Tools.fastServerHop)
