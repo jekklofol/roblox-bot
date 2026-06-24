@@ -854,6 +854,169 @@ function Tools.runMuteCheck(cfgStr)
 end
 
 -- ============================================================
+-- ИИ-ЧАТ РЕЖИМ (DeepSeek через наш сервис). Поведение «живого игрока»:
+-- бот слушает чат, изредка и к месту отвечает через LLM, ещё реже роняет сайт.
+-- Цель: НЕ спам-профиль (обойти теневой бан) + доверие/конверсия. См. REKLAMSHIKI §4c/§4d.
+-- Включается per-bot конфигом bot_config key=`aichat` (любое непустое значение).
+-- Нужны глобальные конфиги: `ai_service_url`, `ai_secret`.
+-- ============================================================
+
+-- триггеры «темы продажи/робуксов» — повышают шанс ответа и разрешают сайт
+local AI_TRIGGERS = {
+    "wts", "wtt", "selling", "sell ", "lf ", "robux", "scam", "scammed",
+    "trade", "trading", "value", "worth", "wfl", "buy", "money", "cheap", "rich",
+}
+
+local function aiHasTrigger(text)
+    local low = string.lower(text or "")
+    for _, kw in ipairs(AI_TRIGGERS) do
+        if string.find(low, kw, 1, true) then return true end
+    end
+    return false
+end
+
+-- один запрос к нашему ИИ-сервису. Возвращает {reply=..., mentionedSite=bool} или nil/skip.
+function Tools.aiChatRequest(contextRows, allowSite)
+    if not httprequest then return nil end
+    local url    = Tools.aiServiceUrl
+    local secret = Tools.aiSecret
+    if not url or url == "" or not secret or secret == "" then return nil end
+    local bodyOk, encoded = pcall(function()
+        return HttpService:JSONEncode({
+            context  = contextRows,
+            allowSite = allowSite and true or false,
+            selfName = (player and player.Name) or "",
+        })
+    end)
+    if not bodyOk then return nil end
+    local ok, resp = pcall(httprequest, {
+        Url = url, Method = "POST",
+        Headers = { ["Content-Type"] = "application/json", ["x-bot-secret"] = secret },
+        Body = encoded,
+    })
+    if not ok or not resp then return nil end
+    local code = resp.StatusCode or resp.Status or 0
+    if code < 200 or code >= 300 then
+        return nil, code
+    end
+    local pok, data = pcall(function() return HttpService:JSONDecode(resp.Body or "") end)
+    if not pok or type(data) ~= "table" then return nil end
+    if data.skip or not data.reply or data.reply == "" then return nil end
+    return data
+end
+
+-- собрать контекст для LLM: последние N сообщений буфера, в порядке СТАРЫЕ→НОВЫЕ
+local function aiBuildContext(n)
+    n = n or 10
+    local buf = Tools.chatMessageBuffer
+    local rows = {}
+    -- буфер новые-первыми → берём первые n и переворачиваем
+    local take = math.min(n, #buf)
+    for i = take, 1, -1 do
+        local m = buf[i]
+        if m and m.text and m.text ~= "" then
+            table.insert(rows, { sender = m.sender or "player", text = m.text })
+        end
+    end
+    return rows
+end
+
+-- основной цикл ИИ-режима на ОДНОМ сервере (потом hop, как runBot).
+function Tools.runAiChat(cfgStr)
+    local cfg = {}
+    pcall(function() cfg = HttpService:JSONDecode(cfgStr) end)
+    if type(cfg) ~= "table" then cfg = {} end
+
+    -- глобальные настройки сервиса
+    Tools.aiServiceUrl = Tools.getRemoteConfigValue("ai_service_url") or ""
+    Tools.aiSecret     = Tools.getRemoteConfigValue("ai_secret") or ""
+
+    -- параметры поведения (дефолты можно переопределить в cfg)
+    local dwell        = tonumber(cfg.secs)          or 130    -- сколько сидим на сервере до hop
+    local checkMin     = tonumber(cfg.check_min)     or 6      -- как часто заглядываем в чат
+    local checkMax     = tonumber(cfg.check_max)     or 11
+    local minGap       = tonumber(cfg.min_gap)       or 28     -- мин. пауза между НАШИМИ репликами
+    local siteCooldown = tonumber(cfg.site_cooldown) or 480    -- пауза после упоминания сайта
+    local chanceTrig   = tonumber(cfg.chance_trigger) or 0.65  -- шанс ответить на тему-триггер
+    local chanceIdle   = tonumber(cfg.chance_idle)   or 0.16   -- шанс просто поддержать болтовню
+    local siteChance   = tonumber(cfg.site_chance)   or 0.55   -- шанс РАЗРЕШИТЬ сайт, когда уместно
+
+    Tools.logCritical("AICHAT старт", {
+        category = "AICHAT", dwell = dwell,
+        has_url = (Tools.aiServiceUrl ~= ""), has_secret = (Tools.aiSecret ~= ""),
+    })
+    pcall(Tools._flushLogs)
+
+    if Tools.aiServiceUrl == "" or Tools.aiSecret == "" then
+        Tools.logError("AICHAT: нет ai_service_url / ai_secret — выходим", { category = "AICHAT" })
+        task.wait(3); pcall(Tools.fastServerHop); return
+    end
+
+    -- зайти в игру
+    if Tools.waitForPlayButton(20) then Tools.randomDelay(1, 3); pcall(Tools.clickPlayButton) end
+    if Tools.waitForAdoptionIslandButton(2) then pcall(Tools.clickAdoptionIslandButton) end
+    Tools.connectChatListener()
+    Tools.randomDelay(4, 8)
+
+    local serverStart = tick()
+    local lastReplyAt = 0
+    local lastSiteAt  = -1e9
+
+    while Tools.getBotState().running and (tick() - serverStart) < dwell do
+        Tools.randomDelay(checkMin, checkMax)
+        if not Tools.getBotState().running then break end
+
+        -- есть ли свежие ЧУЖИЕ сообщения после нашего последнего ответа?
+        local buf = Tools.chatMessageBuffer
+        local freshTrigger, freshAny = false, false
+        for i = 1, math.min(12, #buf) do
+            local m = buf[i]
+            if m and not m.isSelf and m.at and m.at > lastReplyAt then
+                freshAny = true
+                if aiHasTrigger(m.text) then freshTrigger = true end
+            end
+        end
+        if not freshAny then
+            -- никто не пишет → иногда бросаем что-то лёгкое (соц.присутствие), но редко
+            if (tick() - lastReplyAt) > (minGap * 3) and math.random() < 0.10 then
+                freshAny = true
+            else
+                -- nothing to do this tick
+            end
+        end
+        if freshAny and (tick() - lastReplyAt) >= minGap then
+            local chance = freshTrigger and chanceTrig or chanceIdle
+            if math.random() < chance then
+                local allowSite = freshTrigger
+                    and (tick() - lastSiteAt) > siteCooldown
+                    and (math.random() < siteChance)
+                local data = Tools.aiChatRequest(aiBuildContext(10), allowSite)
+                if data and data.reply then
+                    -- человеческая задержка «печатания» по длине ответа
+                    local typeWait = math.clamp(#data.reply / 9, 1.5, 7) + math.random() * 2
+                    task.wait(typeWait)
+                    if Tools.getBotState().running then
+                        Tools.sendChat(data.reply)
+                        lastReplyAt = tick()
+                        if data.mentionedSite then lastSiteAt = tick() end
+                        Tools.logInfo("AICHAT ответ отправлен", {
+                            category = "AICHAT", site = data.mentionedSite and true or false,
+                        })
+                    end
+                end
+            end
+        end
+    end
+
+    Tools.logInfo("AICHAT заход завершён, hop", { category = "AICHAT",
+        time_on_server = math.floor(tick() - serverStart) })
+    pcall(Tools.endSession)
+    pcall(Tools._flushLogs)
+    task.wait(2)
+    pcall(Tools.fastServerHop)
+end
+
+-- ============================================================
 -- LOCAL CURSOR
 -- ============================================================
 function Tools.getSavedCursor(placeId)

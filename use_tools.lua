@@ -1,4 +1,4 @@
-local V                     = "v3.24.0-mutecheck-hardened"
+local V                     = "v3.25.0-aichat"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -66,6 +66,13 @@ if mutecheck and mutecheck ~= "" then
     Tools.runMuteCheck(mutecheck)
     return
 end
+
+-- ИИ-ЧАТ режим (по конфигу `aichat`): бот ведёт себя как живой игрок и болтает через
+-- DeepSeek, изредка роняя сайт к месту — вместо спам-рекламы (обход теневого бана).
+-- НЕ делаем early-return: проходим весь обычный сетап (анти-коллизия/watchdog/
+-- autoReconnect), а внизу в xpcall запускаем ИИ-цикл вместо runBot. См. Tools.runAiChat.
+local aichat  = Tools.getRemoteConfigValue("aichat")
+local AI_MODE = aichat ~= nil and aichat ~= ""
 
 -- уровень логирования в базу (по умолчанию INFO — DEBUG-шум не пишем; см. tools.lua)
 local logLvl = Tools.getRemoteConfigValue("min_log_level")
@@ -226,14 +233,15 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- Глобальный xpcall
+-- Глобальный xpcall (ИИ-режим ИЛИ обычная реклама — по конфигу aichat)
 -- ============================================================
+local mainLoop = AI_MODE and function() Tools.runAiChat(aichat) end or runBot
 task.spawn(function()
-    local ok, err = xpcall(runBot, function(e)
+    local ok, err = xpcall(mainLoop, function(e)
         return tostring(e) .. "\n" .. debug.traceback("", 2)
     end)
     if not ok then
-        Tools.logCritical("runBot упал с исключением", {
+        Tools.logCritical((AI_MODE and "runAiChat" or "runBot") .. " упал с исключением", {
             category = "EXCEPTION", error = tostring(err),
         })
         pcall(Tools._flushLogs)
