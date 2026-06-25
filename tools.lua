@@ -865,6 +865,7 @@ end
 local AI_TRIGGERS = {
     "wts", "wtt", "selling", "sell ", "lf ", "robux", "scam", "scammed",
     "trade", "trading", "value", "worth", "wfl", "buy", "money", "cheap", "rich",
+    "real money", "irl", "paypal", "cash", "broke", "afford", "rmt", "overpay",
 }
 
 local function aiHasTrigger(text)
