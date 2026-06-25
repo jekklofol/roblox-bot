@@ -936,10 +936,13 @@ function Tools.runAiChat(cfgStr)
     local checkMin     = tonumber(cfg.check_min)     or 6      -- как часто заглядываем в чат
     local checkMax     = tonumber(cfg.check_max)     or 11
     local minGap       = tonumber(cfg.min_gap)       or 28     -- мин. пауза между НАШИМИ репликами
-    local siteCooldown = tonumber(cfg.site_cooldown) or 480    -- пауза после упоминания сайта
-    local chanceTrig   = tonumber(cfg.chance_trigger) or 0.65  -- шанс ответить на тему-триггер
-    local chanceIdle   = tonumber(cfg.chance_idle)   or 0.16   -- шанс просто поддержать болтовню
-    local siteChance   = tonumber(cfg.site_chance)   or 0.55   -- шанс РАЗРЕШИТЬ сайт, когда уместно
+    -- ПРОФИЛЬ ПО УМОЛЧАНИЮ = «редко/безопасно» (выбор Леси 2026-06-25): сайт только сильно
+    -- к месту + длинный кулдаун → не спалиться/не словить теневой бан на старте чистых акков.
+    -- Поднять охват позже = переопределить site_cooldown/site_chance в конфиге aichat.
+    local siteCooldown = tonumber(cfg.site_cooldown) or 900    -- пауза после упоминания сайта (~15 мин)
+    local chanceTrig   = tonumber(cfg.chance_trigger) or 0.6   -- шанс ОТВЕТИТЬ на тему-триггер (это просто болтовня, безопасно)
+    local chanceIdle   = tonumber(cfg.chance_idle)   or 0.15   -- шанс просто поддержать болтовню
+    local siteChance   = tonumber(cfg.site_chance)   or 0.35   -- шанс РАЗРЕШИТЬ сайт, когда уместно (низкий = редко)
 
     Tools.logCritical("AICHAT старт", {
         category = "AICHAT", dwell = dwell,
