@@ -7,8 +7,10 @@
 --   * расширенная телеметрия
 -- ============================================================
 
-local SUPABASE_URL      = "https://tzqzynajdeyrahzpzsim.supabase.co"
-local SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR6cXp5bmFqZGV5cmFoenB6c2ltIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc4Mzk1MTMsImV4cCI6MjA5MzQxNTUxM30.DohPVX1ZwHFi0R4xNKx5ntZRBgoyq1iWnNlU_6FaSRs"
+-- СВОЙ Postgres+PostgREST на нашем сервере (ушли с Supabase 2026-06-27 — лимит трафика).
+-- Тот же REST-API, поэтому Tools.sb не меняется, только адрес+ключ. См. REKLAMSHIKI §6.
+local SUPABASE_URL      = "https://212-113-104-183.sslip.io"
+local SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InJla2xhbXNoaWtpIn0.ndQK7X-ZmTu4fUvpNbI-H8nkqDHGNIQEg5vBK1WBES4"
 
 local Players             = game:GetService("Players")
 local VirtualInputManager = game:GetService("VirtualInputManager")

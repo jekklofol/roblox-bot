@@ -1,4 +1,4 @@
-local V                     = "v3.25.0-aichat"
+local V                     = "v3.26.0-selfhosted-db"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
