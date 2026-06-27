@@ -940,43 +940,47 @@ function Tools.runDressRecon()
         enabled = ae and ae.Enabled or false })
     if not ae then Tools.logCritical("DRESS конец (нет редактора)", {category="DRESS"}); task.wait(2); pcall(Tools.fastServerHop); return end
 
-    -- 3) кликнуть категорию hair (или all_shirts)
+    -- 3) кликнуть именно категорию ВОЛОС (приоритет hair → all_shirts → all_faces)
     local catBtn
-    for _, d in ipairs(ae:GetDescendants()) do
-        if d:IsA("GuiButton") and (d.Name == "hair" or d.Name == "all_shirts" or d.Name == "all_faces") then catBtn = d; break end
+    for _, want in ipairs({ "hair", "all_shirts", "all_faces" }) do
+        for _, d in ipairs(ae:GetDescendants()) do
+            if d:IsA("GuiButton") and d.Name == want then catBtn = d; break end
+        end
+        if catBtn then break end
     end
     if catBtn then
         Tools.logCritical("DRESS catBtn", { category = "DRESS", name = catBtn.Name, path = catBtn:GetFullName():sub(1, 200) })
-        clickObj(catBtn); task.wait(3)
+        clickObj(catBtn); task.wait(3.5)
     else
         Tools.logCritical("DRESS catBtn НЕ найден", { category = "DRESS" })
     end
 
-    -- 4) дамп списков предметов (ScrollingFrame с >=5 детьми) + признаки платный/lock
+    -- 4) дамп ПРЕДМЕТОВ внутри категории: ScrollingFrame НЕ из CategorySlider, с >=4 детьми.
+    --    Для каждого предмета: имена детей (структура) + признаки price/lock/equipped.
     local dumped = 0
     for _, d in ipairs(ae:GetDescendants()) do
-        if d:IsA("ScrollingFrame") then
-            local kids = d:GetChildren()
-            local guiKids = 0
-            for _, k in ipairs(kids) do if k:IsA("GuiObject") then guiKids = guiKids + 1 end end
-            if guiKids >= 5 then
-                Tools.logCritical("DRESS scroll", { category = "DRESS", path = d:GetFullName():sub(1, 160), kids = #kids })
-                local shown = 0
-                for _, k in ipairs(kids) do
-                    if k:IsA("GuiObject") then
-                        shown = shown + 1
-                        if shown > 6 then break end
-                        local hasPrice, hasLock = false, false
-                        for _, sub in ipairs(k:GetDescendants()) do
-                            local ln = string.lower(sub.Name)
-                            if ln:find("price") or ln:find("cost") or ln:find("bucks") then hasPrice = true end
-                            if ln:find("lock") or ln:find("premium") or ln:find("owned") then hasLock = true end
-                        end
-                        Tools.logCritical("DRESS item", { category = "DRESS", name = k.Name, class = k.ClassName, price = hasPrice, lock = hasLock })
+        if d:IsA("ScrollingFrame") and not string.find(d:GetFullName(), "CategorySlider", 1, true) then
+            local items = {}
+            for _, k in ipairs(d:GetChildren()) do
+                if k:IsA("GuiButton") or (k:IsA("Frame") and #k:GetChildren() > 0) then items[#items + 1] = k end
+            end
+            if #items >= 4 then
+                Tools.logCritical("DRESS itemsBox", { category = "DRESS", path = d:GetFullName():sub(1, 170), n = #items })
+                for i = 1, math.min(#items, 8) do
+                    local k = items[i]
+                    local names, price, lock, owned = {}, false, false, false
+                    for _, sub in ipairs(k:GetDescendants()) do
+                        names[#names + 1] = sub.Name
+                        local ln = string.lower(sub.Name)
+                        if ln:find("price") or ln:find("cost") or ln:find("bucks") then price = true end
+                        if ln:find("lock") or ln:find("premium") then lock = true end
+                        if ln:find("owned") or ln:find("equip") or ln:find("check") or ln:find("select") then owned = true end
                     end
+                    Tools.logCritical("DRESS item", { category = "DRESS", name = k.Name, class = k.ClassName,
+                        price = price, lock = lock, owned = owned, kids = table.concat(names, ","):sub(1, 170) })
                 end
                 dumped = dumped + 1
-                if dumped >= 2 then break end
+                if dumped >= 1 then break end
             end
         end
     end
