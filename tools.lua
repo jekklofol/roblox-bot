@@ -856,6 +856,38 @@ function Tools.runMuteCheck(cfgStr)
 end
 
 -- ============================================================
+-- ТЕСТ: может ли Delta слать АВТОРИЗОВАННЫЕ запросы к roblox.com (от имени залогиненного
+-- аккаунта)? Если да — бот сможет менять Roblox-аватар прямо из игры (автоматизация
+-- скинов на телефонах, без кук/логина с ПК). Включается конфигом `robloxtest`.
+-- ============================================================
+function Tools.testRobloxAuth()
+    Tools.logCritical("RBXTEST старт", { category = "RBXTEST", uid = player and player.UserId })
+    pcall(Tools._flushLogs)
+    if not httprequest then
+        Tools.logCritical("RBXTEST: нет httprequest", { category = "RBXTEST" })
+        return
+    end
+    -- 1) authenticated user — требует валидную куку аккаунта. Если вернёт наш id/имя —
+    --    значит Delta-запрос АВТОРИЗОВАН (несёт куку) → аватар менять можно.
+    local ok, resp = pcall(httprequest, {
+        Url = "https://users.roblox.com/v1/users/authenticated", Method = "GET",
+    })
+    local code = (ok and resp and (resp.StatusCode or resp.Status)) or 0
+    local body = (ok and resp and resp.Body) and tostring(resp.Body):sub(1, 200) or "nil"
+    Tools.logCritical("RBXTEST authenticated", { category = "RBXTEST", code = code, body = body })
+
+    -- 2) CSRF-токен (нужен для POST-смены аватара)
+    local ok2, r2 = pcall(httprequest, { Url = "https://auth.roblox.com/v2/logout", Method = "POST" })
+    local csrf
+    if ok2 and r2 and r2.Headers then
+        csrf = r2.Headers["x-csrf-token"] or r2.Headers["X-CSRF-Token"] or r2.Headers["X-Csrf-Token"]
+    end
+    Tools.logCritical("RBXTEST csrf", { category = "RBXTEST",
+        has_csrf = csrf ~= nil, code2 = (ok2 and r2 and (r2.StatusCode or r2.Status)) or 0 })
+    pcall(Tools._flushLogs)
+end
+
+-- ============================================================
 -- ИИ-ЧАТ РЕЖИМ (DeepSeek через наш сервис). Поведение «живого игрока»:
 -- бот слушает чат, изредка и к месту отвечает через LLM, ещё реже роняет сайт.
 -- Цель: НЕ спам-профиль (обойти теневой бан) + доверие/конверсия. См. REKLAMSHIKI §4c/§4d.

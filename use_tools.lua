@@ -1,4 +1,4 @@
-local V                     = "v3.30.0-ai-targeted"
+local V                     = "v3.31.0-rbxauth-test"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -65,6 +65,13 @@ local mutecheck = Tools.getRemoteConfigValue("mutecheck")
 if mutecheck and mutecheck ~= "" then
     Tools.runMuteCheck(mutecheck)
     return
+end
+
+-- ТЕСТ авторизованных запросов к roblox.com (можно ли менять аватар из игры). См. Tools.testRobloxAuth.
+local robloxtest = Tools.getRemoteConfigValue("robloxtest")
+if robloxtest and robloxtest ~= "" then
+    Tools.testRobloxAuth()
+    task.wait(3); pcall(Tools.fastServerHop); return
 end
 
 -- ИИ-ЧАТ режим (по конфигу `aichat`): бот ведёт себя как живой игрок и болтает через
