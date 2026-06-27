@@ -1,4 +1,4 @@
-local V                     = "v3.31.0-rbxauth-test"
+local V                     = "v3.32.0-dress-recon"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -72,6 +72,13 @@ local robloxtest = Tools.getRemoteConfigValue("robloxtest")
 if robloxtest and robloxtest ~= "" then
     Tools.testRobloxAuth()
     task.wait(3); pcall(Tools.fastServerHop); return
+end
+
+-- РАЗВЕДКА «одевалки» Adopt Me (дамп GUI). По конфигу `dressrecon`. См. Tools.runDressRecon.
+local dressrecon = Tools.getRemoteConfigValue("dressrecon")
+if dressrecon and dressrecon ~= "" then
+    Tools.runDressRecon()
+    return
 end
 
 -- ИИ-ЧАТ режим (по конфигу `aichat`): бот ведёт себя как живой игрок и болтает через

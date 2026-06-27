@@ -863,28 +863,92 @@ end
 function Tools.testRobloxAuth()
     Tools.logCritical("RBXTEST старт", { category = "RBXTEST", uid = player and player.UserId })
     pcall(Tools._flushLogs)
-    if not httprequest then
-        Tools.logCritical("RBXTEST: нет httprequest", { category = "RBXTEST" })
-        return
+    -- пробуем ВСЕ HTTP-функции экзекутора: некоторые САМИ прикладывают куку roblox.com
+    -- (тогда запрос авторизован → аватар менять можно). httprequest обычно «чистый» (без куки).
+    -- ссылки на несуществующие глобалы = nil (в Lua это не ошибка), syn/fluxus — через and.
+    local candidates = {
+        { name = "request",        fn = request },
+        { name = "http_request",   fn = http_request },
+        { name = "httprequest",    fn = httprequest },
+        { name = "syn.request",    fn = syn and syn.request },
+        { name = "fluxus.request", fn = fluxus and fluxus.request },
+        { name = "http.request",   fn = http and http.request },
+    }
+    for _, c in ipairs(candidates) do
+        if type(c.fn) == "function" then
+            local ok, resp = pcall(c.fn, {
+                Url = "https://users.roblox.com/v1/users/authenticated", Method = "GET",
+            })
+            local code = (ok and resp and (resp.StatusCode or resp.Status or resp.status)) or 0
+            local raw  = ok and resp and (resp.Body or resp.body)
+            local body = raw and tostring(raw):sub(1, 140) or (ok and "no_body" or "pcall_fail")
+            -- code 200 + наш id в теле = функция авторизована (то что ищем)
+            Tools.logCritical("RBXTEST fn", { category = "RBXTEST", fn = c.name, code = code, body = body })
+        else
+            Tools.logCritical("RBXTEST fn", { category = "RBXTEST", fn = c.name, code = "НЕТ_ФУНКЦИИ" })
+        end
+        pcall(Tools._flushLogs)
+        task.wait(0.5)
     end
-    -- 1) authenticated user — требует валидную куку аккаунта. Если вернёт наш id/имя —
-    --    значит Delta-запрос АВТОРИЗОВАН (несёт куку) → аватар менять можно.
-    local ok, resp = pcall(httprequest, {
-        Url = "https://users.roblox.com/v1/users/authenticated", Method = "GET",
-    })
-    local code = (ok and resp and (resp.StatusCode or resp.Status)) or 0
-    local body = (ok and resp and resp.Body) and tostring(resp.Body):sub(1, 200) or "nil"
-    Tools.logCritical("RBXTEST authenticated", { category = "RBXTEST", code = code, body = body })
+end
 
-    -- 2) CSRF-токен (нужен для POST-смены аватара)
-    local ok2, r2 = pcall(httprequest, { Url = "https://auth.roblox.com/v2/logout", Method = "POST" })
-    local csrf
-    if ok2 and r2 and r2.Headers then
-        csrf = r2.Headers["x-csrf-token"] or r2.Headers["X-CSRF-Token"] or r2.Headers["X-Csrf-Token"]
-    end
-    Tools.logCritical("RBXTEST csrf", { category = "RBXTEST",
-        has_csrf = csrf ~= nil, code2 = (ok2 and r2 and (r2.StatusCode or r2.Status)) or 0 })
+-- ============================================================
+-- РАЗВЕДКА «ОДЕВАЛКИ» Adopt Me: бот заходит в игру и выгружает в логи структуру GUI
+-- (имена всех кнопок + элементы, похожие на dress/customize) — чтобы понять, по чему
+-- кликать для автокастомизации. НИЧЕГО не меняет. Включается конфигом `dressrecon`.
+-- ============================================================
+function Tools.runDressRecon()
+    Tools.logCritical("DRESS recon старт", { category = "DRESS" })
     pcall(Tools._flushLogs)
+    task.wait(3)
+    if Tools.waitForPlayButton(20) then Tools.randomDelay(1, 2); pcall(Tools.clickPlayButton) end
+    task.wait(7)  -- дать прогрузиться HUD
+    local pg = player and player:FindFirstChild("PlayerGui")
+    if not pg then
+        Tools.logCritical("DRESS: нет PlayerGui", { category = "DRESS" })
+        task.wait(2); pcall(Tools.fastServerHop); return
+    end
+
+    -- топ-уровень: имена всех ScreenGui
+    local tops = {}
+    for _, g in ipairs(pg:GetChildren()) do tops[#tops + 1] = g.Name end
+    Tools.logCritical("DRESS top", { category = "DRESS", n = #tops, names = table.concat(tops, ",") :sub(1, 500) })
+
+    -- собрать имена ВСЕХ кнопок + пути элементов по ключевым словам
+    local keys = { "dress", "custom", "wardrobe", "outfit", "cloth", "closet", "appear", "avatar", "shop", "style" }
+    local btnNames, matches, seen = {}, {}, {}
+    local function scan(obj, d)
+        if d > 7 then return end
+        for _, ch in ipairs(obj:GetChildren()) do
+            if ch:IsA("GuiButton") then
+                if not seen[ch.Name] then seen[ch.Name] = true; btnNames[#btnNames + 1] = ch.Name end
+            end
+            local low = string.lower(ch.Name)
+            for _, k in ipairs(keys) do
+                if string.find(low, k, 1, true) then
+                    matches[#matches + 1] = ch:GetFullName() .. "[" .. ch.ClassName .. "]"; break
+                end
+            end
+            scan(ch, d + 1)
+        end
+    end
+    pcall(scan, pg, 0)
+
+    -- кнопки — кусками (имён много)
+    local btnStr = table.concat(btnNames, ",")
+    local parts = 0
+    for i = 1, #btnStr, 600 do
+        parts = parts + 1
+        if parts > 5 then break end
+        Tools.logCritical("DRESS buttons", { category = "DRESS", part = parts, s = btnStr:sub(i, i + 599) })
+    end
+    for i = 1, math.min(#matches, 12) do
+        Tools.logCritical("DRESS match", { category = "DRESS", p = matches[i]:sub(1, 300) })
+    end
+    Tools.logCritical("DRESS итог", { category = "DRESS", buttons = #btnNames, matches = #matches })
+    pcall(Tools._flushLogs)
+    task.wait(2)
+    pcall(Tools.fastServerHop)
 end
 
 -- ============================================================
