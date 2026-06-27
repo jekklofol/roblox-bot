@@ -879,7 +879,8 @@ local function aiHasTrigger(text)
 end
 
 -- один запрос к нашему ИИ-сервису. Возвращает {reply=..., mentionedSite=bool} или nil/skip.
-function Tools.aiChatRequest(contextRows, allowSite)
+-- targetName (необяз.) — к кому обращаемся по имени (адресный диалог вместо broadcast).
+function Tools.aiChatRequest(contextRows, allowSite, targetName)
     if not httprequest then return nil end
     local url    = Tools.aiServiceUrl
     local secret = Tools.aiSecret
@@ -889,6 +890,7 @@ function Tools.aiChatRequest(contextRows, allowSite)
             context  = contextRows,
             allowSite = allowSite and true or false,
             selfName = (player and player.Name) or "",
+            targetName = targetName or "",
         })
     end)
     if not bodyOk then return nil end
@@ -1002,13 +1004,21 @@ function Tools.runAiChat(cfgStr)
         if not Tools.getBotState().running then break end
 
         -- есть ли свежие ЧУЖИЕ сообщения после нашего последнего ответа?
+        -- + ловим «цель»: автора САМОГО СВЕЖЕГО горячего сообщения (триггер) — к нему
+        -- обратимся по имени (адресный диалог). buf новые-первыми, берём первого по теме.
         local buf = Tools.chatMessageBuffer
         local freshTrigger, freshAny = false, false
+        local targetName = nil
         for i = 1, math.min(12, #buf) do
             local m = buf[i]
             if m and not m.isSelf and m.at and m.at > lastReplyAt then
                 freshAny = true
-                if aiHasTrigger(m.text) then freshTrigger = true end
+                if aiHasTrigger(m.text) then
+                    freshTrigger = true
+                    if not targetName and m.sender and m.sender ~= "Unknown" then
+                        targetName = m.sender
+                    end
+                end
             end
         end
         if not freshAny then
@@ -1026,7 +1036,7 @@ function Tools.runAiChat(cfgStr)
                 -- почти всегда), но НЕ в каждом сообщении (кулдаун) → реклама есть, но не спам.
                 local siteReady = (tick() - lastSiteAt) > siteCooldown
                 local allowSite = siteReady and (math.random() < (freshTrigger and 0.95 or siteChance))
-                local data = Tools.aiChatRequest(aiBuildContext(10), allowSite)
+                local data = Tools.aiChatRequest(aiBuildContext(10), allowSite, targetName)
                 if data and data.reply then
                     -- человеческая задержка «печатания» по длине ответа
                     local typeWait = math.clamp(#data.reply / 9, 1.5, 7) + math.random() * 2
