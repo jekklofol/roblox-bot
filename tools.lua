@@ -955,43 +955,28 @@ function Tools.runDressRecon()
         Tools.logCritical("DRESS catBtn НЕ найден", { category = "DRESS" })
     end
 
-    -- 4) РОБАСТНО найти сетку предметов: группируем ImageButton-ы по родителю,
-    --    родитель с МАКСИМУМОМ кнопок = список предметов (не важно ScrollingFrame/Frame/grid).
-    local main = ae:FindFirstChild("Catalog", true) or ae
-    local groups = {}
+    -- 4) ПОЛНЫЙ ДАМП дерева Catalog.Main (с доп.паузой на async-подгрузку предметов):
+    --    статистика классов (сколько ImageButton/ViewportFrame/...) + всё дерево имя:класс кусками.
+    task.wait(4)  -- дать предметам прогрузиться после клика категории
+    local cat = ae:FindFirstChild("Catalog", true)
+    local main = (cat and (cat:FindFirstChild("Main") or cat)) or ae
+    local cnt, lines = {}, {}
     for _, d in ipairs(main:GetDescendants()) do
-        if d:IsA("ImageButton") and not string.find(d:GetFullName(), "CategorySlider", 1, true) then
-            local par = d.Parent
-            if par then
-                local key = par:GetFullName()
-                groups[key] = groups[key] or { n = 0, parent = par }
-                groups[key].n = groups[key].n + 1
-            end
+        cnt[d.ClassName] = (cnt[d.ClassName] or 0) + 1
+        if not string.find(d:GetFullName(), "CategorySlider", 1, true) then
+            lines[#lines + 1] = d.Name .. ":" .. d.ClassName
         end
     end
-    local best, bestN = nil, 0
-    for _, g in pairs(groups) do if g.n > bestN then bestN = g.n; best = g end end
-    if best and best.parent then
-        Tools.logCritical("DRESS itemsBox", { category = "DRESS", path = best.parent:GetFullName():sub(1, 170), n = bestN })
-        local shown = 0
-        for _, k in ipairs(best.parent:GetChildren()) do
-            if k:IsA("GuiObject") then
-                shown = shown + 1
-                if shown > 8 then break end
-                local names, price, lock, owned = {}, false, false, false
-                for _, sub in ipairs(k:GetDescendants()) do
-                    names[#names + 1] = sub.Name
-                    local ln = string.lower(sub.Name)
-                    if ln:find("price") or ln:find("cost") or ln:find("bucks") or ln:find("robux") then price = true end
-                    if ln:find("lock") or ln:find("premium") then lock = true end
-                    if ln:find("equip") or ln:find("owned") or ln:find("select") or ln:find("check") then owned = true end
-                end
-                Tools.logCritical("DRESS item", { category = "DRESS", name = k.Name, class = k.ClassName,
-                    price = price, lock = lock, owned = owned, kids = table.concat(names, ","):sub(1, 160) })
-            end
-        end
-    else
-        Tools.logCritical("DRESS itemsBox НЕ найден", { category = "DRESS", mainPath = main:GetFullName():sub(1, 150) })
+    local stat = {}
+    for cls, n in pairs(cnt) do stat[#stat + 1] = cls .. "=" .. n end
+    Tools.logCritical("DRESS stat", { category = "DRESS", path = main:GetFullName():sub(1, 120),
+        classes = table.concat(stat, ","):sub(1, 400) })
+    local tree = table.concat(lines, " | ")
+    local p = 0
+    for i = 1, #tree, 700 do
+        p = p + 1
+        if p > 8 then break end
+        Tools.logCritical("DRESS tree", { category = "DRESS", part = p, s = tree:sub(i, i + 699) })
     end
     Tools.logCritical("DRESS recon2 конец", { category = "DRESS", scrolls = dumped })
     pcall(Tools._flushLogs)
