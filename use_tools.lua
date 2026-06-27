@@ -1,4 +1,4 @@
-local V                     = "v3.28.0-ai-profiles"
+local V                     = "v3.29.0-ai-reliable-site"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100

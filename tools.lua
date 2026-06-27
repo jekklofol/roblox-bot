@@ -924,17 +924,20 @@ local function aiBuildContext(n)
     return rows
 end
 
--- ПРОФИЛИ ПОВЕДЕНИЯ — боты ведут себя ПО-РАЗНОМУ (мягко / обычно / активно).
--- Профиль достаётся боту СТАБИЛЬНО по его имени (или задаётся в cfg.profile).
--- Все безопасны (даже active — не спам); различаются частотой реплик и напористостью сайта.
+-- ПРОФИЛИ СТИЛЯ — боты по-разному БОЛТАЮТ (спокойный / обычный / болтливый), чтобы не
+-- слали одинаковое. САЙТ у ВСЕХ упоминается надёжно (в этом смысл ботов) — различается
+-- только активность общения. Профиль достаётся боту стабильно по имени (или cfg.profile).
 local AI_PROFILES = {
-    soft   = { min_gap = 45, site_cooldown = 1200, chance_trigger = 0.40, chance_idle = 0.08, site_chance = 0.20 },
-    normal = { min_gap = 28, site_cooldown = 900,  chance_trigger = 0.60, chance_idle = 0.15, site_chance = 0.35 },
-    active = { min_gap = 20, site_cooldown = 600,  chance_trigger = 0.80, chance_idle = 0.25, site_chance = 0.50 },
+    chill  = { min_gap = 32, chance_trigger = 0.60, chance_idle = 0.12 },  -- спокойный, реже пишет
+    normal = { min_gap = 24, chance_trigger = 0.75, chance_idle = 0.20 },
+    chatty = { min_gap = 16, chance_trigger = 0.90, chance_idle = 0.32 },  -- активный болтун
 }
--- распределение по флоту (в сторону безопасного): больше мягких, меньше активных.
--- Поменять микс = эти веса (в сумме 100).
-local AI_PROFILE_MIX = { { "soft", 50 }, { "normal", 35 }, { "active", 15 } }
+-- распределение стилей по флоту (примерно поровну — разнообразие). Поменять = эти веса.
+local AI_PROFILE_MIX = { { "chill", 34 }, { "normal", 36 }, { "chatty", 30 } }
+
+-- САЙТ у ВСЕХ профилей надёжно (цель ботов = реклама), но НЕ в каждом сообщении (не спам):
+local AI_SITE_CHANCE   = 0.75   -- высокий шанс разрешить сайт, когда бот пишет
+local AI_SITE_COOLDOWN = 240    -- ~4 мин между упоминаниями сайта → несколько раз за заход
 
 local function aiPickProfile(name)
     local h = 0
@@ -968,10 +971,10 @@ function Tools.runAiChat(cfgStr)
     local checkMin     = tonumber(cfg.check_min)      or 6     -- как часто заглядываем в чат
     local checkMax     = tonumber(cfg.check_max)      or 11
     local minGap       = tonumber(cfg.min_gap)        or prof.min_gap        -- мин. пауза между нашими репликами
-    local siteCooldown = tonumber(cfg.site_cooldown)  or prof.site_cooldown  -- пауза после упоминания сайта
+    local siteCooldown = tonumber(cfg.site_cooldown)  or AI_SITE_COOLDOWN    -- пауза после упоминания сайта (глоб., надёжно)
     local chanceTrig   = tonumber(cfg.chance_trigger) or prof.chance_trigger -- шанс ответить на тему-триггер (болтовня)
     local chanceIdle   = tonumber(cfg.chance_idle)    or prof.chance_idle    -- шанс поддержать болтовню
-    local siteChance   = tonumber(cfg.site_chance)    or prof.site_chance    -- шанс разрешить сайт, когда уместно
+    local siteChance   = tonumber(cfg.site_chance)    or AI_SITE_CHANCE      -- шанс разрешить сайт, когда пишем (глоб., высокий)
 
     Tools.logCritical("AICHAT старт", {
         category = "AICHAT", dwell = dwell, profile = profName,
@@ -1019,9 +1022,10 @@ function Tools.runAiChat(cfgStr)
         if freshAny and (tick() - lastReplyAt) >= minGap then
             local chance = freshTrigger and chanceTrig or chanceIdle
             if math.random() < chance then
-                local allowSite = freshTrigger
-                    and (tick() - lastSiteAt) > siteCooldown
-                    and (math.random() < siteChance)
+                -- САЙТ надёжно: разрешаем как только прошёл кулдаун (на тему-триггер —
+                -- почти всегда), но НЕ в каждом сообщении (кулдаун) → реклама есть, но не спам.
+                local siteReady = (tick() - lastSiteAt) > siteCooldown
+                local allowSite = siteReady and (math.random() < (freshTrigger and 0.95 or siteChance))
                 local data = Tools.aiChatRequest(aiBuildContext(10), allowSite)
                 if data and data.reply then
                     -- человеческая задержка «печатания» по длине ответа
