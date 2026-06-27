@@ -909,43 +909,78 @@ function Tools.runDressRecon()
         task.wait(2); pcall(Tools.fastServerHop); return
     end
 
-    -- топ-уровень: имена всех ScreenGui
-    local tops = {}
-    for _, g in ipairs(pg:GetChildren()) do tops[#tops + 1] = g.Name end
-    Tools.logCritical("DRESS top", { category = "DRESS", n = #tops, names = table.concat(tops, ",") :sub(1, 500) })
+    -- универсальный клик по GUI-объекту (как clickPlayButton: эмуляция мыши + fire)
+    local function clickObj(obj)
+        if not obj then return false end
+        local pos, sz = obj.AbsolutePosition, obj.AbsoluteSize
+        local inset = GuiService:GetGuiInset()
+        local cx = pos.X + sz.X / 2
+        local cy = pos.Y + sz.Y / 2 + inset.Y
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1); task.wait(0.06)
+            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
+        end)
+        pcall(function() obj.MouseButton1Click:Fire() end)
+        pcall(function() obj:Activate() end)
+        return true
+    end
 
-    -- собрать имена ВСЕХ кнопок + пути элементов по ключевым словам
-    local keys = { "dress", "custom", "wardrobe", "outfit", "cloth", "closet", "appear", "avatar", "shop", "style" }
-    local btnNames, matches, seen = {}, {}, {}
-    local function scan(obj, d)
-        if d > 7 then return end
-        for _, ch in ipairs(obj:GetChildren()) do
-            if ch:IsA("GuiButton") then
-                if not seen[ch.Name] then seen[ch.Name] = true; btnNames[#btnNames + 1] = ch.Name end
-            end
-            local low = string.lower(ch.Name)
-            for _, k in ipairs(keys) do
-                if string.find(low, k, 1, true) then
-                    matches[#matches + 1] = ch:GetFullName() .. "[" .. ch.ClassName .. "]"; break
+    -- 1) найти и кликнуть кнопку DressUp
+    local dressBtn
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA("GuiButton") and d.Name == "DressUp" then dressBtn = d; break end
+    end
+    Tools.logCritical("DRESS btn", { category = "DRESS", found = dressBtn ~= nil,
+        path = dressBtn and dressBtn:GetFullName():sub(1, 200) or "nil" })
+    if dressBtn then clickObj(dressBtn); task.wait(3.5) end
+
+    -- 2) открылся ли AvatarEditorApp
+    local ae = pg:FindFirstChild("AvatarEditorApp")
+    Tools.logCritical("DRESS editor", { category = "DRESS", exists = ae ~= nil,
+        enabled = ae and ae.Enabled or false })
+    if not ae then Tools.logCritical("DRESS конец (нет редактора)", {category="DRESS"}); task.wait(2); pcall(Tools.fastServerHop); return end
+
+    -- 3) кликнуть категорию hair (или all_shirts)
+    local catBtn
+    for _, d in ipairs(ae:GetDescendants()) do
+        if d:IsA("GuiButton") and (d.Name == "hair" or d.Name == "all_shirts" or d.Name == "all_faces") then catBtn = d; break end
+    end
+    if catBtn then
+        Tools.logCritical("DRESS catBtn", { category = "DRESS", name = catBtn.Name, path = catBtn:GetFullName():sub(1, 200) })
+        clickObj(catBtn); task.wait(3)
+    else
+        Tools.logCritical("DRESS catBtn НЕ найден", { category = "DRESS" })
+    end
+
+    -- 4) дамп списков предметов (ScrollingFrame с >=5 детьми) + признаки платный/lock
+    local dumped = 0
+    for _, d in ipairs(ae:GetDescendants()) do
+        if d:IsA("ScrollingFrame") then
+            local kids = d:GetChildren()
+            local guiKids = 0
+            for _, k in ipairs(kids) do if k:IsA("GuiObject") then guiKids = guiKids + 1 end end
+            if guiKids >= 5 then
+                Tools.logCritical("DRESS scroll", { category = "DRESS", path = d:GetFullName():sub(1, 160), kids = #kids })
+                local shown = 0
+                for _, k in ipairs(kids) do
+                    if k:IsA("GuiObject") then
+                        shown = shown + 1
+                        if shown > 6 then break end
+                        local hasPrice, hasLock = false, false
+                        for _, sub in ipairs(k:GetDescendants()) do
+                            local ln = string.lower(sub.Name)
+                            if ln:find("price") or ln:find("cost") or ln:find("bucks") then hasPrice = true end
+                            if ln:find("lock") or ln:find("premium") or ln:find("owned") then hasLock = true end
+                        end
+                        Tools.logCritical("DRESS item", { category = "DRESS", name = k.Name, class = k.ClassName, price = hasPrice, lock = hasLock })
+                    end
                 end
+                dumped = dumped + 1
+                if dumped >= 2 then break end
             end
-            scan(ch, d + 1)
         end
     end
-    pcall(scan, pg, 0)
-
-    -- кнопки — кусками (имён много)
-    local btnStr = table.concat(btnNames, ",")
-    local parts = 0
-    for i = 1, #btnStr, 600 do
-        parts = parts + 1
-        if parts > 5 then break end
-        Tools.logCritical("DRESS buttons", { category = "DRESS", part = parts, s = btnStr:sub(i, i + 599) })
-    end
-    for i = 1, math.min(#matches, 12) do
-        Tools.logCritical("DRESS match", { category = "DRESS", p = matches[i]:sub(1, 300) })
-    end
-    Tools.logCritical("DRESS итог", { category = "DRESS", buttons = #btnNames, matches = #matches })
+    Tools.logCritical("DRESS recon2 конец", { category = "DRESS", scrolls = dumped })
     pcall(Tools._flushLogs)
     task.wait(2)
     pcall(Tools.fastServerHop)
