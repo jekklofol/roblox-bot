@@ -924,6 +924,29 @@ local function aiBuildContext(n)
     return rows
 end
 
+-- ПРОФИЛИ ПОВЕДЕНИЯ — боты ведут себя ПО-РАЗНОМУ (мягко / обычно / активно).
+-- Профиль достаётся боту СТАБИЛЬНО по его имени (или задаётся в cfg.profile).
+-- Все безопасны (даже active — не спам); различаются частотой реплик и напористостью сайта.
+local AI_PROFILES = {
+    soft   = { min_gap = 45, site_cooldown = 1200, chance_trigger = 0.40, chance_idle = 0.08, site_chance = 0.20 },
+    normal = { min_gap = 28, site_cooldown = 900,  chance_trigger = 0.60, chance_idle = 0.15, site_chance = 0.35 },
+    active = { min_gap = 20, site_cooldown = 600,  chance_trigger = 0.80, chance_idle = 0.25, site_chance = 0.50 },
+}
+-- распределение по флоту (в сторону безопасного): больше мягких, меньше активных.
+-- Поменять микс = эти веса (в сумме 100).
+local AI_PROFILE_MIX = { { "soft", 50 }, { "normal", 35 }, { "active", 15 } }
+
+local function aiPickProfile(name)
+    local h = 0
+    for i = 1, #name do h = (h * 31 + string.byte(name, i)) % 1000003 end
+    local r, acc = h % 100, 0
+    for _, pw in ipairs(AI_PROFILE_MIX) do
+        acc = acc + pw[2]
+        if r < acc then return pw[1] end
+    end
+    return "normal"
+end
+
 -- основной цикл ИИ-режима на ОДНОМ сервере (потом hop, как runBot).
 function Tools.runAiChat(cfgStr)
     local cfg = {}
@@ -934,21 +957,24 @@ function Tools.runAiChat(cfgStr)
     Tools.aiServiceUrl = Tools.getRemoteConfigValue("ai_service_url") or ""
     Tools.aiSecret     = Tools.getRemoteConfigValue("ai_secret") or ""
 
-    -- параметры поведения (дефолты можно переопределить в cfg)
-    local dwell        = tonumber(cfg.secs)          or 130    -- сколько сидим на сервере до hop
-    local checkMin     = tonumber(cfg.check_min)     or 6      -- как часто заглядываем в чат
-    local checkMax     = tonumber(cfg.check_max)     or 11
-    local minGap       = tonumber(cfg.min_gap)       or 28     -- мин. пауза между НАШИМИ репликами
-    -- ПРОФИЛЬ ПО УМОЛЧАНИЮ = «редко/безопасно» (выбор Леси 2026-06-25): сайт только сильно
-    -- к месту + длинный кулдаун → не спалиться/не словить теневой бан на старте чистых акков.
-    -- Поднять охват позже = переопределить site_cooldown/site_chance в конфиге aichat.
-    local siteCooldown = tonumber(cfg.site_cooldown) or 900    -- пауза после упоминания сайта (~15 мин)
-    local chanceTrig   = tonumber(cfg.chance_trigger) or 0.6   -- шанс ОТВЕТИТЬ на тему-триггер (это просто болтовня, безопасно)
-    local chanceIdle   = tonumber(cfg.chance_idle)   or 0.15   -- шанс просто поддержать болтовню
-    local siteChance   = tonumber(cfg.site_chance)   or 0.35   -- шанс РАЗРЕШИТЬ сайт, когда уместно (низкий = редко)
+    -- ПРОФИЛЬ АКТИВНОСТИ бота: из cfg.profile или стабильно по имени (soft/normal/active).
+    -- Распределение по флоту в сторону «мягко/безопасно» (см. AI_PROFILE_MIX).
+    local profName = (cfg.profile and AI_PROFILES[cfg.profile]) and cfg.profile
+        or aiPickProfile((player and player.Name) or "x")
+    local prof = AI_PROFILES[profName] or AI_PROFILES.normal
+
+    -- параметры поведения: дефолты ИЗ ПРОФИЛЯ, любой можно точечно переопределить в cfg
+    local dwell        = tonumber(cfg.secs)           or 130   -- сколько сидим на сервере до hop
+    local checkMin     = tonumber(cfg.check_min)      or 6     -- как часто заглядываем в чат
+    local checkMax     = tonumber(cfg.check_max)      or 11
+    local minGap       = tonumber(cfg.min_gap)        or prof.min_gap        -- мин. пауза между нашими репликами
+    local siteCooldown = tonumber(cfg.site_cooldown)  or prof.site_cooldown  -- пауза после упоминания сайта
+    local chanceTrig   = tonumber(cfg.chance_trigger) or prof.chance_trigger -- шанс ответить на тему-триггер (болтовня)
+    local chanceIdle   = tonumber(cfg.chance_idle)    or prof.chance_idle    -- шанс поддержать болтовню
+    local siteChance   = tonumber(cfg.site_chance)    or prof.site_chance    -- шанс разрешить сайт, когда уместно
 
     Tools.logCritical("AICHAT старт", {
-        category = "AICHAT", dwell = dwell,
+        category = "AICHAT", dwell = dwell, profile = profName,
         has_url = (Tools.aiServiceUrl ~= ""), has_secret = (Tools.aiSecret ~= ""),
     })
     pcall(Tools._flushLogs)
