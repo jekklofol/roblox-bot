@@ -1025,6 +1025,13 @@ end
 -- ============================================================
 -- LOCAL CURSOR
 -- ============================================================
+-- суффикс по UserId — общий для cursor/visited файлов. ОБЪЯВЛЕН ЗДЕСЬ (выше всех,
+-- кто его зовёт), иначе cursor-функции резолвят его как nil-глобал → краш (fix C1).
+local function _userSuffix()
+    local uid = player and player.UserId
+    return uid and ("_" .. tostring(uid)) or ""
+end
+
 function Tools.getSavedCursor(placeId)
     local check = isfile or isfile_custom or (syn and syn.is_file)
     local read  = readfile or read_file or (syn and syn.read_file)
@@ -1061,13 +1068,8 @@ function Tools.clearCursor(placeId)
 end
 
 -- ============================================================
--- LOCAL VISITED JOBIDS (per-user, быстрый чек коллизии до ответа Supabase)
+-- LOCAL VISITED JOBIDS (per-user, быстрый чек коллизии до ответа базы)
 -- ============================================================
-local function _userSuffix()
-    local uid = player and player.UserId
-    return uid and ("_" .. tostring(uid)) or ""
-end
-
 local function _visitedFile(placeId)
     return "visited_" .. tostring(placeId) .. _userSuffix() .. ".json"
 end

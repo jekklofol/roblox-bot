@@ -1,4 +1,4 @@
-local V                     = "v3.26.0-selfhosted-db"
+local V                     = "v3.27.0-bugfix-cursor"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
