@@ -955,34 +955,43 @@ function Tools.runDressRecon()
         Tools.logCritical("DRESS catBtn НЕ найден", { category = "DRESS" })
     end
 
-    -- 4) дамп ПРЕДМЕТОВ внутри категории: ScrollingFrame НЕ из CategorySlider, с >=4 детьми.
-    --    Для каждого предмета: имена детей (структура) + признаки price/lock/equipped.
-    local dumped = 0
-    for _, d in ipairs(ae:GetDescendants()) do
-        if d:IsA("ScrollingFrame") and not string.find(d:GetFullName(), "CategorySlider", 1, true) then
-            local items = {}
-            for _, k in ipairs(d:GetChildren()) do
-                if k:IsA("GuiButton") or (k:IsA("Frame") and #k:GetChildren() > 0) then items[#items + 1] = k end
-            end
-            if #items >= 4 then
-                Tools.logCritical("DRESS itemsBox", { category = "DRESS", path = d:GetFullName():sub(1, 170), n = #items })
-                for i = 1, math.min(#items, 8) do
-                    local k = items[i]
-                    local names, price, lock, owned = {}, false, false, false
-                    for _, sub in ipairs(k:GetDescendants()) do
-                        names[#names + 1] = sub.Name
-                        local ln = string.lower(sub.Name)
-                        if ln:find("price") or ln:find("cost") or ln:find("bucks") then price = true end
-                        if ln:find("lock") or ln:find("premium") then lock = true end
-                        if ln:find("owned") or ln:find("equip") or ln:find("check") or ln:find("select") then owned = true end
-                    end
-                    Tools.logCritical("DRESS item", { category = "DRESS", name = k.Name, class = k.ClassName,
-                        price = price, lock = lock, owned = owned, kids = table.concat(names, ","):sub(1, 170) })
-                end
-                dumped = dumped + 1
-                if dumped >= 1 then break end
+    -- 4) РОБАСТНО найти сетку предметов: группируем ImageButton-ы по родителю,
+    --    родитель с МАКСИМУМОМ кнопок = список предметов (не важно ScrollingFrame/Frame/grid).
+    local main = ae:FindFirstChild("Catalog", true) or ae
+    local groups = {}
+    for _, d in ipairs(main:GetDescendants()) do
+        if d:IsA("ImageButton") and not string.find(d:GetFullName(), "CategorySlider", 1, true) then
+            local par = d.Parent
+            if par then
+                local key = par:GetFullName()
+                groups[key] = groups[key] or { n = 0, parent = par }
+                groups[key].n = groups[key].n + 1
             end
         end
+    end
+    local best, bestN = nil, 0
+    for _, g in pairs(groups) do if g.n > bestN then bestN = g.n; best = g end end
+    if best and best.parent then
+        Tools.logCritical("DRESS itemsBox", { category = "DRESS", path = best.parent:GetFullName():sub(1, 170), n = bestN })
+        local shown = 0
+        for _, k in ipairs(best.parent:GetChildren()) do
+            if k:IsA("GuiObject") then
+                shown = shown + 1
+                if shown > 8 then break end
+                local names, price, lock, owned = {}, false, false, false
+                for _, sub in ipairs(k:GetDescendants()) do
+                    names[#names + 1] = sub.Name
+                    local ln = string.lower(sub.Name)
+                    if ln:find("price") or ln:find("cost") or ln:find("bucks") or ln:find("robux") then price = true end
+                    if ln:find("lock") or ln:find("premium") then lock = true end
+                    if ln:find("equip") or ln:find("owned") or ln:find("select") or ln:find("check") then owned = true end
+                end
+                Tools.logCritical("DRESS item", { category = "DRESS", name = k.Name, class = k.ClassName,
+                    price = price, lock = lock, owned = owned, kids = table.concat(names, ","):sub(1, 160) })
+            end
+        end
+    else
+        Tools.logCritical("DRESS itemsBox НЕ найден", { category = "DRESS", mainPath = main:GetFullName():sub(1, 150) })
     end
     Tools.logCritical("DRESS recon2 конец", { category = "DRESS", scrolls = dumped })
     pcall(Tools._flushLogs)

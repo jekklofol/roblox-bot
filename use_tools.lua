@@ -1,4 +1,4 @@
-local V                     = "v3.34.0-dress-recon3"
+local V                     = "v3.35.0-dress-recon4"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
