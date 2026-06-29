@@ -1,4 +1,4 @@
-local V                     = "v3.37.0-pause"
+local V                     = "v3.38.0-warmup"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100

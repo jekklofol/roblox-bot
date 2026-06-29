@@ -1124,6 +1124,17 @@ function Tools.runAiChat(cfgStr)
     Tools.connectChatListener()
     Tools.randomDelay(4, 8)
 
+    -- РАЗОГРЕВ: НЕ строчим в ту же секунду как зашли (это палевно → ре-бан). Сидим,
+    -- «осматриваемся», читаем чат (буфер копится для контекста) и только потом включаемся.
+    -- Так выглядит как живой игрок, который зашёл и сперва огляделся.
+    local warmMin = tonumber(cfg.warmup_min) or 50
+    local warmMax = tonumber(cfg.warmup_max) or 100
+    Tools.logCritical("AICHAT разогрев перед рекламой (сек)", {
+        category = "AICHAT", warmMin = warmMin, warmMax = warmMax,
+    })
+    pcall(Tools._flushLogs)
+    Tools.randomDelay(warmMin, warmMax)
+
     local serverStart = tick()
     local lastReplyAt = 0
     local lastSiteAt  = -1e9
