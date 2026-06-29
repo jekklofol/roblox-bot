@@ -1,4 +1,4 @@
-local V                     = "v3.43.0-reaction-fullgap"
+local V                     = "v3.44.0-dedup-chat"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100

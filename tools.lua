@@ -2310,6 +2310,20 @@ Tools.filterStats = { ok = 0, censored = 0, flood = 0, blocked = 0, sent = 0, no
 function Tools._pushChatMessage(text, sender, userId)
     text   = text or ""
     sender = sender or "Unknown"
+    -- ДЕДУП: одно сообщение часто прилетает дважды (сервис-уровневый хук без отправителя
+    -- + канальный хук с отправителем). Если такой же текст только что (≤1.5с) уже клали —
+    -- не дублируем; при этом дотягиваем отправителя/userId, если новая копия их знает.
+    local b1 = Tools.chatMessageBuffer[1]
+    if b1 and b1.text == text and (tick() - (b1.at or 0)) < 1.5 then
+        if (b1.sender == nil or b1.sender == "Unknown") and sender and sender ~= "Unknown" then
+            b1.sender = sender
+        end
+        if (not b1.userId or b1.userId == 0) and userId and userId > 0 then
+            b1.userId = userId
+            if player and userId ~= player.UserId then Tools.visitChatters[userId] = true end
+        end
+        return
+    end
     local isSelf = false
     if userId and player and userId == player.UserId then isSelf = true end
     if not isSelf and player and sender == player.Name then isSelf = true end
