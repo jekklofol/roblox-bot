@@ -1,4 +1,4 @@
-local V                     = "v3.36.0-dress-recon5"
+local V                     = "v3.37.0-pause"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -50,6 +50,16 @@ end)
 
 Tools.startHeartbeat(45)
 Tools.startCommandLoop(5)
+
+-- ПАУЗА ФЛОТА (по глоб./per-bot конфигу `pause`): бот СТОИТ, не рекламирует (но онлайн,
+-- heartbeat и командный цикл живут). Держится через перезапуски (читается каждый старт).
+-- Снять = удалить конфиг pause + rejoin. Удалённый «стоп всех» одной кнопкой.
+local paused = Tools.getRemoteConfigValue("pause")
+if paused and paused ~= "" then
+    Tools.logCritical("ПАУЗА (pause) — бот не рекламирует", { category = "BOT" })
+    pcall(Tools._flushLogs)
+    while true do task.wait(30) end
+end
 
 -- СЕЛФ-ТЕСТ shadow-mute (по конфигу): ДО анти-коллизии, чтобы пара ботов могла
 -- ужиться на одном сервере. Если конфиг 'selftest' задан — бот уходит в тест и
