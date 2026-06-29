@@ -468,6 +468,51 @@ function Tools.getRemoteConfigValue(key, defaultValue)
 end
 
 -- ============================================================
+-- РАСПИСАНИЕ СМЕН (чтобы боты не работали 24/7, а как живые люди — по сменам)
+-- ============================================================
+-- Глоб. конфиг `shift_windows` = JSON-массив окон в ЧАСАХ UTC, напр. [[5,13],[13,21],[21,29]]
+--   (3 смены по 8ч; 29 = переход за полночь до 05:00). Если не задан → боты работают всегда.
+-- Смена конкретного бота: per-bot конфиг `shift` (число 0..N-1) ИЛИ стабильно по имени.
+-- Возврат: active(bool), idx, startHour, endHour. Если время узнать не вышло — работаем (fail-open).
+function Tools.inActiveShift()
+    local raw = Tools.getRemoteConfigValue("shift_windows")
+    if not raw or raw == "" then return true end
+    local ok, windows = pcall(function() return HttpService:JSONDecode(raw) end)
+    if not ok or type(windows) ~= "table" or #windows == 0 then return true end
+    local n = #windows
+
+    -- какая смена у этого бота
+    local idx
+    local sc = Tools.getRemoteConfigValue("shift")
+    if sc and tostring(sc) ~= "" and tonumber(sc) then
+        idx = (tonumber(sc) % n) + 1
+    else
+        local name = (player and player.Name) or "x"
+        local h = 0
+        for i = 1, #name do h = (h * 31 + string.byte(name, i)) % 1000003 end
+        idx = (h % n) + 1
+    end
+
+    local w = windows[idx]
+    if type(w) ~= "table" or w[1] == nil or w[2] == nil then return true end
+    local s, e = tonumber(w[1]), tonumber(w[2])
+    if not s or not e then return true end
+
+    local tok, t = pcall(function() return os.date("!*t") end)  -- ! = UTC
+    if not tok or not t or not t.hour then return true, idx, s, e end
+    local hr = t.hour
+    local active
+    if e > 24 then            -- окно через полночь, напр. [21,29) = 21:00–05:00
+        active = (hr >= (s % 24)) or (hr < (e - 24))
+    elseif e <= s then        -- тоже через полночь, напр. [21,5)
+        active = (hr >= s) or (hr < e)
+    else
+        active = (hr >= s) and (hr < e)
+    end
+    return active, idx, s, e
+end
+
+-- ============================================================
 -- MESSAGES (с кэшированием)
 -- ============================================================
 function Tools.preloadMessages(force)
@@ -1083,6 +1128,11 @@ local AI_PROFILE_MIX = { { "chill", 34 }, { "normal", 36 }, { "chatty", 30 } }
 local AI_SITE_CHANCE   = 0.75   -- высокий шанс разрешить сайт, когда бот пишет
 local AI_SITE_COOLDOWN = 240    -- ~4 мин между упоминаниями сайта → несколько раз за заход
 
+-- ПАУЗА МЕЖДУ НАШИМИ РЕПЛИКАМИ — рандом 3–7 мин (по-человечески, не спам). Едина для
+-- всех профилей (профиль влияет только на ШАНС вступить в разговор, не на скорость).
+local AI_GAP_MIN = 180   -- 3 мин
+local AI_GAP_MAX = 420   -- 7 мин
+
 local function aiPickProfile(name)
     local h = 0
     for i = 1, #name do h = (h * 31 + string.byte(name, i)) % 1000003 end
@@ -1111,10 +1161,14 @@ function Tools.runAiChat(cfgStr)
     local prof = AI_PROFILES[profName] or AI_PROFILES.normal
 
     -- параметры поведения: дефолты ИЗ ПРОФИЛЯ, любой можно точечно переопределить в cfg
-    local dwell        = tonumber(cfg.secs)           or 130   -- сколько сидим на сервере до hop
+    local dwell        = tonumber(cfg.secs)           or 1200  -- сидим на сервере ДОЛГО (как живой игрок ~20 мин), мало прыгаем
     local checkMin     = tonumber(cfg.check_min)      or 6     -- как часто заглядываем в чат
     local checkMax     = tonumber(cfg.check_max)      or 11
-    local minGap       = tonumber(cfg.min_gap)        or prof.min_gap        -- мин. пауза между нашими репликами
+    -- ПАУЗА между нашими репликами — рандом 3–7 мин (по-человечески, не спам). Выбирается
+    -- ЗАНОВО после каждой реплики (gapNow ниже). Разогрев на неё НЕ накладывается:
+    -- первая реплика разрешена сразу после разогрева (lastReplyAt=0).
+    local gapMin       = tonumber(cfg.gap_min)        or AI_GAP_MIN
+    local gapMax       = tonumber(cfg.gap_max)        or AI_GAP_MAX
     local siteCooldown = tonumber(cfg.site_cooldown)  or AI_SITE_COOLDOWN    -- пауза после упоминания сайта (глоб., надёжно)
     local chanceTrig   = tonumber(cfg.chance_trigger) or prof.chance_trigger -- шанс ответить на тему-триггер (болтовня)
     local chanceIdle   = tonumber(cfg.chance_idle)    or prof.chance_idle    -- шанс поддержать болтовню
@@ -1174,6 +1228,10 @@ function Tools.runAiChat(cfgStr)
     local serverStart = tick()
     local lastReplyAt = 0
     local lastSiteAt  = -1e9
+    -- пауза до СЛЕДУЮЩЕЙ реплики (рандом 3–7 мин, выбирается заново после каждой).
+    -- Стартует с 0 → первая реплика разрешена сразу после разогрева (без наложения).
+    local gapNow = 0
+    local function rollGap() return gapMin + math.random() * math.max(0, gapMax - gapMin) end
 
     while Tools.getBotState().running and (tick() - serverStart) < dwell do
         Tools.randomDelay(checkMin, checkMax)
@@ -1200,13 +1258,13 @@ function Tools.runAiChat(cfgStr)
         end
         if not freshAny then
             -- никто не пишет → иногда бросаем что-то лёгкое (соц.присутствие), но редко
-            if (tick() - lastReplyAt) > (minGap * 3) and math.random() < 0.10 then
+            if (tick() - lastReplyAt) > (gapNow * 2) and math.random() < 0.10 then
                 freshAny = true
             else
                 -- nothing to do this tick
             end
         end
-        if freshAny and (tick() - lastReplyAt) >= minGap then
+        if freshAny and (tick() - lastReplyAt) >= gapNow then
             local chance = freshTrigger and chanceTrig or chanceIdle
             if math.random() < chance then
                 -- САЙТ надёжно: разрешаем как только прошёл кулдаун (на тему-триггер —
@@ -1221,9 +1279,11 @@ function Tools.runAiChat(cfgStr)
                     if Tools.getBotState().running then
                         Tools.sendChat(data.reply)
                         lastReplyAt = tick()
+                        gapNow = rollGap()   -- следующая пауза — заново рандом 3–7 мин
                         if data.mentionedSite then lastSiteAt = tick() end
                         Tools.logInfo("AICHAT ответ отправлен", {
                             category = "AICHAT", site = data.mentionedSite and true or false,
+                            next_gap_s = math.floor(gapNow),
                         })
                     end
                 end

@@ -1,4 +1,4 @@
-local V                     = "v3.39.0-censorguard"
+local V                     = "v3.40.0-humanize"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
@@ -59,6 +59,21 @@ if paused and paused ~= "" then
     Tools.logCritical("ПАУЗА (pause) — бот не рекламирует", { category = "BOT" })
     pcall(Tools._flushLogs)
     while true do task.wait(30) end
+end
+
+-- РАСПИСАНИЕ СМЕН: вне своего временного окна (UTC) бот НЕ рекламит — живёт как человек,
+-- а не 24/7. Окна задаёт глоб. конфиг shift_windows (если не задан — работаем всегда).
+-- Вне смены: ждём и периодически перепроверяем (heartbeat/команды живут, можно разбудить).
+if Tools.getRemoteConfigValue("shift_windows") then
+    local active, idx, s, e = Tools.inActiveShift()
+    if not active then
+        Tools.logCritical("Вне смены — ждём своё окно (UTC)", {
+            category = "BOT", shift = idx, from_h = s, to_h = e,
+        })
+        pcall(Tools._flushLogs)
+        while not Tools.inActiveShift() do task.wait(600) end
+        Tools.logCritical("Смена началась — выходим в работу", { category = "BOT", shift = idx })
+    end
 end
 
 -- СЕЛФ-ТЕСТ shadow-mute (по конфигу): ДО анти-коллизии, чтобы пара ботов могла
