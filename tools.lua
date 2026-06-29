@@ -1039,7 +1039,20 @@ function Tools.aiChatRequest(contextRows, allowSite, targetName)
     return data
 end
 
--- собрать контекст для LLM: последние N сообщений буфера, в порядке СТАРЫЕ→НОВЫЕ
+-- Похоже ли сообщение на зацензуренное Roblox-фильтром (###, ***, content deleted)?
+-- На ограниченном (возраст/новизна) акке Roblox шлёт ВЕСЬ чужой текст решётками — такие
+-- сообщения бесполезны: ИИ не должен их получать как контекст и не должен на них отвечать.
+local function aiIsCensored(text)
+    if not text or text == "" then return false end
+    if string.find(text, "###", 1, true) then return true end             -- ран из 3+ решёток
+    local hs = select(2, string.gsub(text, "[#%*]", ""))
+    if hs > 0 and hs / #text >= 0.4 then return true end                   -- ≥40% символов #/*
+    if string.find(string.lower(text), "content deleted", 1, true) then return true end
+    return false
+end
+
+-- собрать контекст для LLM: последние N сообщений буфера, в порядке СТАРЫЕ→НОВЫЕ.
+-- Зацензуренные (###) сообщения ВЫКИДЫВАЕМ — это шум, ИИ на них не должен реагировать.
 local function aiBuildContext(n)
     n = n or 10
     local buf = Tools.chatMessageBuffer
@@ -1048,7 +1061,7 @@ local function aiBuildContext(n)
     local take = math.min(n, #buf)
     for i = take, 1, -1 do
         local m = buf[i]
-        if m and m.text and m.text ~= "" then
+        if m and m.text and m.text ~= "" and not aiIsCensored(m.text) then
             table.insert(rows, { sender = m.sender or "player", text = m.text })
         end
     end
@@ -1135,6 +1148,29 @@ function Tools.runAiChat(cfgStr)
     pcall(Tools._flushLogs)
     Tools.randomDelay(warmMin, warmMax)
 
+    -- ПРОВЕРКА ОГРАНИЧЕНИЯ ЧАТА: за разогрев в буфер натекли чужие сообщения. Если их
+    -- было достаточно и почти все — решётки (###), значит этот акк в ограниченном чате
+    -- (возраст/новизна): он и сам не сможет рекламить (его текст → ###), и контекст не
+    -- видит. Флудить тут бессмысленно и палевно → молча уходим на следующий сервер.
+    do
+        local buf = Tools.chatMessageBuffer
+        local seen, censored = 0, 0
+        for i = 1, math.min(25, #buf) do
+            local m = buf[i]
+            if m and not m.isSelf and m.text and m.text ~= "" then
+                seen = seen + 1
+                if aiIsCensored(m.text) then censored = censored + 1 end
+            end
+        end
+        if seen >= 4 and (censored / seen) >= 0.8 then
+            Tools.logCritical("Чат акка ограничен (входящий весь в ###) — заход без рекламы", {
+                category = "AICHAT", seen = seen, censored = censored,
+            })
+            pcall(Tools._flushLogs)
+            task.wait(2); pcall(Tools.fastServerHop); return
+        end
+    end
+
     local serverStart = tick()
     local lastReplyAt = 0
     local lastSiteAt  = -1e9
@@ -1151,7 +1187,8 @@ function Tools.runAiChat(cfgStr)
         local targetName = nil
         for i = 1, math.min(12, #buf) do
             local m = buf[i]
-            if m and not m.isSelf and m.at and m.at > lastReplyAt then
+            -- ### не считаем сообщением: на него не реагируем и по нему не адресуемся
+            if m and not m.isSelf and m.at and m.at > lastReplyAt and not aiIsCensored(m.text) then
                 freshAny = true
                 if aiHasTrigger(m.text) then
                     freshTrigger = true

@@ -1,4 +1,4 @@
-local V                     = "v3.38.0-warmup"
+local V                     = "v3.39.0-censorguard"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100
