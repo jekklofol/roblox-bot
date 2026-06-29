@@ -1,4 +1,4 @@
-local V                     = "v3.40.0-humanize"
+local V                     = "v3.41.0-engagement-logs"
 local PLACE_ID              = 920587237
 local MIN_PLAYERS_PREFERRED = 5
 local MAX_PLAYERS_ALLOWED   = 100

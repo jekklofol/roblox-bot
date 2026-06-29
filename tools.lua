@@ -1277,6 +1277,14 @@ function Tools.runAiChat(cfgStr)
                     local typeWait = math.clamp(#data.reply / 9, 1.5, 7) + math.random() * 2
                     task.wait(typeWait)
                     if Tools.getBotState().running then
+                        -- снимок чата, НА который отвечаем (видно живой ли диалог)
+                        local saw = {}
+                        for i = 1, math.min(3, #buf) do
+                            local m = buf[i]
+                            if m and not m.isSelf and m.text and m.text ~= "" then
+                                table.insert(saw, (m.sender or "?") .. ": " .. m.text)
+                            end
+                        end
                         Tools.sendChat(data.reply)
                         lastReplyAt = tick()
                         gapNow = rollGap()   -- следующая пауза — заново рандом 3–7 мин
@@ -1284,6 +1292,7 @@ function Tools.runAiChat(cfgStr)
                         Tools.logInfo("AICHAT ответ отправлен", {
                             category = "AICHAT", site = data.mentionedSite and true or false,
                             next_gap_s = math.floor(gapNow),
+                            reply = data.reply, to = targetName or "", saw = saw,
                         })
                     end
                 end
@@ -2293,6 +2302,17 @@ function Tools._pushChatMessage(text, sender, userId)
             pcall(function()
                 Tools.logInfo("Чужое сообщение (диагностика фильтра)", {
                     category = "FILTER_OBS", text = text, sender = tostring(sender),
+                })
+            end)
+        end
+    end
+    -- ВОВЛЕЧЕНИЕ: чужой игрок упомянул наш ник → он реагирует НА БОТА (отвечает нам).
+    -- Прямая метрика «отвечают ли нам» для анализа (видно в логах REPLY_TO_US).
+    if not isSelf and text ~= "" and player and player.Name and #player.Name >= 3 then
+        if string.find(string.lower(text), string.lower(player.Name), 1, true) then
+            pcall(function()
+                Tools.logInfo("Игрок ответил НАМ", {
+                    category = "REPLY_TO_US", text = text, sender = tostring(sender),
                 })
             end)
         end
