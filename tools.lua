@@ -1294,6 +1294,29 @@ function Tools.runAiChat(cfgStr)
                             next_gap_s = math.floor(gapNow),
                             reply = data.reply, to = targetName or "", saw = saw,
                         })
+                        -- РЕАКЦИЯ: ловим ВЕСЬ чужой чат в окне ~45с после нашего сообщения.
+                        -- Так видно ответ, даже если игрок не упомянул наш ник (просто пишет
+                        -- в чат). В тихом сервере это явно нам; в людном — читаем и судим сами.
+                        local sentAt = tick()
+                        task.spawn(function()
+                            task.wait(45)
+                            local reacts = {}
+                            for i = 1, math.min(20, #Tools.chatMessageBuffer) do
+                                local m = Tools.chatMessageBuffer[i]
+                                if m and not m.isSelf and m.at and m.at > sentAt
+                                   and m.text and m.text ~= "" and not aiIsCensored(m.text) then
+                                    table.insert(reacts, (m.sender or "?") .. ": " .. m.text)
+                                end
+                            end
+                            if #reacts > 0 then
+                                pcall(function()
+                                    Tools.logInfo("Реакция в чате после нашего сообщения", {
+                                        category = "REACTION", count = #reacts,
+                                        after = data.reply, msgs = reacts,
+                                    })
+                                end)
+                            end
+                        end)
                     end
                 end
             end
